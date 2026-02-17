@@ -1,0 +1,10 @@
+[package]
+name = "cad-constraint-solver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+constraint-solver = "0.1.1"
+nom = "7"
+nom_locate = "4"
+rs-math3d = "0.10"
