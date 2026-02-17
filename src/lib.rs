@@ -57,14 +57,17 @@ pub use ast::{
     System, SystemStmt, SystemStmtKind, TypeName, UseStmt, Visibility,
 };
 use constraint_solver::{
-    CompileError as SolverCompileError, Compiler as SolverCompiler, Exp, NewtonRaphsonSolver,
-    Solution as RawSolution, SolverError as RawSolverError,
+    CompileError as SolverCompileError, Compiler as SolverCompiler,
+    EquationTrace as RawEquationTrace, Exp, NewtonRaphsonSolver, Solution as RawSolution,
+    SolverError as RawSolverError, SolverRunDiagnostic as RawSolverRunDiagnostic,
 };
 pub use diagnostics::CompileError;
 use parser::parse_program;
 use rs_math3d::{Vec2d, Vec2f, Vec3d, Vec3f};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
+
+const OVERCONSTRAINED_RESIDUAL_THRESHOLD: f64 = 1e-7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolType {
@@ -82,6 +85,7 @@ pub enum SymbolType {
 #[derive(Debug, Clone)]
 pub struct Model {
     equations: Vec<Exp>,
+    equation_origins: Vec<EquationOrigin>,
     // Public API symbols only (`export` declarations, or legacy top-level decls).
     public_symbols: HashMap<String, SymbolType>,
     // Default seed values for *all* flattened variables (public + local).
@@ -168,35 +172,85 @@ impl Model {
         // Ensure caller can only modify public API variables.
         self.validate_seed(&seed)?;
 
+        let SolveSeed {
+            initial: seed_initial,
+            unknowns: seed_unknowns,
+        } = seed;
+
         // Start from declaration defaults, then apply caller overrides.
         let solver_name_set: BTreeSet<String> = self.solver_names.iter().cloned().collect();
         let mut initial = self.defaults.clone();
-        initial.extend(seed.initial);
+        initial.extend(seed_initial);
         // Backend rejects unknown names in the initial map.
         initial.retain(|name, _| solver_name_set.contains(name));
+
+        let selected_unknowns: BTreeSet<String> = if seed_unknowns.is_empty() {
+            self.solver_names.iter().cloned().collect()
+        } else {
+            let mut unknowns = seed_unknowns.clone();
+            unknowns.extend(self.hidden_solver_names.iter().cloned());
+            unknowns
+        };
+        let unknown_count = selected_unknowns.len();
 
         // Convert lowered symbolic equations to backend representation.
         let compiled =
             SolverCompiler::compile(&self.equations).map_err(SolveError::InternalCompile)?;
 
-        let solver = if seed.unknowns.is_empty() {
+        let solver = if seed_unknowns.is_empty() {
             // Solve all variables when unknowns are not specified.
             NewtonRaphsonSolver::new(compiled)
         } else {
             // Always include hidden/local solver vars as unknowns.
-            let mut unknowns = seed.unknowns;
-            unknowns.extend(self.hidden_solver_names.iter().cloned());
-            let unknowns: Vec<String> = unknowns.into_iter().collect();
+            let unknowns: Vec<String> = selected_unknowns.iter().cloned().collect();
             let names: Vec<&str> = unknowns.iter().map(String::as_str).collect();
             NewtonRaphsonSolver::new_with_variables(compiled, &names)?
         };
 
+        // Attach equation trace metadata so backend diagnostics carry origin context.
+        let traces: Vec<Option<RawEquationTrace>> = self
+            .equation_origins
+            .iter()
+            .enumerate()
+            .map(|(idx, origin)| {
+                Some(RawEquationTrace {
+                    constraint_id: idx,
+                    description: origin.description.clone(),
+                })
+            })
+            .collect();
+        let solver = solver.try_with_equation_traces(traces)?;
+
         // Choose solve mode requested by caller.
         let raw = if use_line_search {
-            solver.solve_with_line_search(initial)?
+            match solver.solve_with_line_search(initial) {
+                Ok(solution) => solution,
+                Err(err) => return Err(self.map_solver_error(err, unknown_count)),
+            }
         } else {
-            solver.solve(initial)?
+            match solver.solve(initial) {
+                Ok(solution) => solution,
+                Err(err) => return Err(self.map_solver_error(err, unknown_count)),
+            }
         };
+
+        // Even when backend reports convergence, overconstrained systems can settle on a
+        // least-squares fit with non-zero residual. Surface this as inconsistency.
+        if self.equations.len() > unknown_count && raw.error > OVERCONSTRAINED_RESIDUAL_THRESHOLD {
+            let residuals = self.compute_residuals(&raw.values);
+            return Err(SolveError::Failure(self.failure_report_from_parts(
+                FailureKind::OverconstrainedInconsistency,
+                format!(
+                    "Overconstrained system is inconsistent (least-squares residual {:.3e})",
+                    raw.error
+                ),
+                raw.iterations,
+                raw.error,
+                raw.values.clone(),
+                residuals,
+                unknown_count,
+            )));
+        }
 
         Ok(SolveResult { raw })
     }
@@ -221,6 +275,110 @@ impl Model {
             }
         }
         Ok(())
+    }
+
+    fn map_solver_error(&self, err: RawSolverError, unknown_count: usize) -> SolveError {
+        match err {
+            RawSolverError::NoConvergence(diag) => {
+                let overconstrained = self.equations.len() > unknown_count;
+                let kind = if overconstrained {
+                    FailureKind::OverconstrainedInconsistency
+                } else {
+                    FailureKind::NonConvergence
+                };
+                SolveError::Failure(self.failure_report(kind, diag, unknown_count))
+            }
+            RawSolverError::SingularMatrix(diag) => SolveError::Failure(self.failure_report(
+                FailureKind::SingularMatrix,
+                diag,
+                unknown_count,
+            )),
+            other => SolveError::Solver(other),
+        }
+    }
+
+    fn failure_report(
+        &self,
+        kind: FailureKind,
+        diag: RawSolverRunDiagnostic,
+        unknown_count: usize,
+    ) -> SolveFailureReport {
+        self.failure_report_from_parts(
+            kind,
+            diag.message,
+            diag.iterations,
+            diag.error,
+            diag.values,
+            diag.residuals,
+            unknown_count,
+        )
+    }
+
+    fn failure_report_from_parts(
+        &self,
+        kind: FailureKind,
+        message: String,
+        iterations: usize,
+        error: f64,
+        values: HashMap<String, f64>,
+        residuals: Vec<f64>,
+        unknown_count: usize,
+    ) -> SolveFailureReport {
+        let mut ranked: Vec<(usize, f64)> = residuals
+            .iter()
+            .enumerate()
+            .map(|(idx, value)| (idx, value.abs()))
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        let mut issues = Vec::new();
+        for (eq_idx, magnitude) in ranked.into_iter().take(8) {
+            let residual = residuals.get(eq_idx).copied().unwrap_or(0.0);
+            let issue = if let Some(origin) = self.equation_origins.get(eq_idx) {
+                ConstraintIssue {
+                    equation_index: eq_idx,
+                    residual,
+                    magnitude,
+                    description: origin.description.clone(),
+                    line: origin.line,
+                    column: origin.column,
+                    snippet: origin.snippet.clone(),
+                    pointer: origin.pointer.clone(),
+                }
+            } else {
+                ConstraintIssue {
+                    equation_index: eq_idx,
+                    residual,
+                    magnitude,
+                    description: format!("equation #{eq_idx}"),
+                    line: 0,
+                    column: 0,
+                    snippet: String::new(),
+                    pointer: String::new(),
+                }
+            };
+            issues.push(issue);
+        }
+
+        SolveFailureReport {
+            kind,
+            message,
+            iterations,
+            error,
+            equation_count: self.equations.len(),
+            unknown_count,
+            overconstrained: self.equations.len() > unknown_count,
+            values,
+            residuals,
+            issues,
+        }
+    }
+
+    fn compute_residuals(&self, values: &HashMap<String, f64>) -> Vec<f64> {
+        self.equations
+            .iter()
+            .map(|exp| evaluate_exp(exp, values).unwrap_or(f64::NAN))
+            .collect()
     }
 }
 
@@ -380,6 +538,63 @@ impl SolveResult {
     }
 }
 
+/// Classification for solver failure modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// Overconstrained system with no feasible solution under tolerance.
+    OverconstrainedInconsistency,
+    /// Solver failed to reduce residuals within iteration/damping limits.
+    NonConvergence,
+    /// Solver encountered a singular Jacobian/linear solve failure.
+    SingularMatrix,
+}
+
+/// One high-residual equation mapped back to DSL source.
+#[derive(Debug, Clone)]
+pub struct ConstraintIssue {
+    /// Equation index in the lowered scalar equation list.
+    pub equation_index: usize,
+    /// Signed residual from solver diagnostics.
+    pub residual: f64,
+    /// Absolute residual magnitude (`abs(residual)`).
+    pub magnitude: f64,
+    /// Human-readable origin description (system/call path/component).
+    pub description: String,
+    /// 1-based source line for the originating DSL constraint.
+    pub line: usize,
+    /// 1-based source column for the originating DSL constraint.
+    pub column: usize,
+    /// Source line snippet.
+    pub snippet: String,
+    /// Caret pointer for `snippet`.
+    pub pointer: String,
+}
+
+/// Structured report returned for solver-side failures.
+#[derive(Debug, Clone)]
+pub struct SolveFailureReport {
+    /// High-level failure classification.
+    pub kind: FailureKind,
+    /// Backend-provided failure message.
+    pub message: String,
+    /// Iteration count reached before failure.
+    pub iterations: usize,
+    /// Final residual norm.
+    pub error: f64,
+    /// Number of scalar equations in the lowered system.
+    pub equation_count: usize,
+    /// Number of unknowns selected for solving.
+    pub unknown_count: usize,
+    /// Whether the selected solve set is overconstrained.
+    pub overconstrained: bool,
+    /// Snapshot of variable values at failure time.
+    pub values: HashMap<String, f64>,
+    /// Raw residual vector from backend.
+    pub residuals: Vec<f64>,
+    /// Top residual equations mapped back to source locations.
+    pub issues: Vec<ConstraintIssue>,
+}
+
 /// Errors produced by compile or solve stages.
 #[derive(Debug)]
 pub enum SolveError {
@@ -391,6 +606,8 @@ pub enum SolveError {
     MissingValue(String),
     /// Lowered equations could not be compiled by `constraint-solver`.
     InternalCompile(SolverCompileError),
+    /// Runtime solver failure with structured traceback data.
+    Failure(SolveFailureReport),
     /// Runtime solve failure from the backend solver.
     Solver(RawSolverError),
 }
@@ -404,6 +621,11 @@ impl fmt::Display for SolveError {
             SolveError::InternalCompile(err) => {
                 write!(f, "Failed to compile solver equations: {err}")
             }
+            SolveError::Failure(report) => write!(
+                f,
+                "{} ({:?}, residual {:.3e}, iterations {})",
+                report.message, report.kind, report.error, report.iterations
+            ),
             SolveError::Solver(err) => write!(f, "{err:?}"),
         }
     }
@@ -414,6 +636,16 @@ impl std::error::Error for SolveError {}
 impl From<RawSolverError> for SolveError {
     fn from(value: RawSolverError) -> Self {
         SolveError::Solver(value)
+    }
+}
+
+impl SolveError {
+    /// Returns structured failure report when available.
+    pub fn failure_report(&self) -> Option<&SolveFailureReport> {
+        match self {
+            SolveError::Failure(report) => Some(report),
+            _ => None,
+        }
     }
 }
 
@@ -463,6 +695,15 @@ enum ValueExp {
     Vec3([Exp; 3]),
 }
 
+#[derive(Debug, Clone)]
+struct EquationOrigin {
+    description: String,
+    line: usize,
+    column: usize,
+    snippet: String,
+    pointer: String,
+}
+
 impl ValueExp {
     /// Human-readable type label used in diagnostics.
     fn type_name(&self) -> &'static str {
@@ -491,11 +732,13 @@ struct LowerContext<'a> {
     scopes: Vec<HashMap<String, ValueExp>>,
     public_symbols: HashMap<String, SymbolType>,
     equations: Vec<Exp>,
+    equation_origins: Vec<EquationOrigin>,
     defaults: HashMap<String, f64>,
     flattened_names: Vec<String>,
     public_flattened_names: Vec<String>,
     invocation_counter: usize,
     call_stack: Vec<String>,
+    current_system_name: Option<String>,
 }
 
 impl<'a> LowerContext<'a> {
@@ -507,11 +750,13 @@ impl<'a> LowerContext<'a> {
             scopes: Vec::new(),
             public_symbols: HashMap::new(),
             equations: Vec::new(),
+            equation_origins: Vec::new(),
             defaults: HashMap::new(),
             flattened_names: Vec::new(),
             public_flattened_names: Vec::new(),
             invocation_counter: 0,
             call_stack: Vec::new(),
+            current_system_name: None,
         }
     }
 
@@ -536,6 +781,7 @@ impl<'a> LowerContext<'a> {
 
         Model {
             equations: self.equations,
+            equation_origins: self.equation_origins,
             public_symbols: self.public_symbols,
             defaults: self.defaults,
             flattened_names: self.flattened_names,
@@ -549,6 +795,43 @@ impl<'a> LowerContext<'a> {
     /// Creates a source-mapped compile error.
     fn error_at(&self, message: impl Into<String>, span: &SourceSpan) -> CompileError {
         CompileError::from_span(message, self.source, span)
+    }
+
+    fn current_context_description(&self, component: Option<&str>) -> String {
+        let mut segments = Vec::new();
+        if let Some(system) = &self.current_system_name {
+            segments.push(format!("system {system}"));
+        }
+        if !self.call_stack.is_empty() {
+            segments.push(format!("use {}", self.call_stack.join(" -> ")));
+        }
+
+        let mut description = if segments.is_empty() {
+            "constraint".to_string()
+        } else {
+            format!("constraint [{}]", segments.join(" | "))
+        };
+        if let Some(component) = component {
+            description.push_str(&format!(" component {component}"));
+        }
+        description
+    }
+
+    fn equation_origin(&self, span: &SourceSpan, component: Option<&str>) -> EquationOrigin {
+        let marker = CompileError::from_span("constraint", self.source, span);
+        EquationOrigin {
+            description: self.current_context_description(component),
+            line: span.line,
+            column: span.column,
+            snippet: marker.snippet,
+            pointer: marker.pointer,
+        }
+    }
+
+    fn push_scalar_equation(&mut self, equation: Exp, span: &SourceSpan, component: Option<&str>) {
+        self.equations.push(equation);
+        self.equation_origins
+            .push(self.equation_origin(span, component));
     }
 
     fn push_scope(&mut self, scope: HashMap<String, ValueExp>) {
@@ -787,20 +1070,20 @@ impl<'a> LowerContext<'a> {
         match (lhs, rhs) {
             (ValueExp::Scalar(l), ValueExp::Scalar(r)) => {
                 // Scalar equality: one residual equation.
-                self.equations.push(Exp::sub(l, r));
+                self.push_scalar_equation(Exp::sub(l, r), span, None);
                 Ok(())
             }
             (ValueExp::Vec2(l), ValueExp::Vec2(r)) => {
                 // Vector equality expands component-wise.
-                self.equations.push(Exp::sub(l[0].clone(), r[0].clone()));
-                self.equations.push(Exp::sub(l[1].clone(), r[1].clone()));
+                self.push_scalar_equation(Exp::sub(l[0].clone(), r[0].clone()), span, Some("x"));
+                self.push_scalar_equation(Exp::sub(l[1].clone(), r[1].clone()), span, Some("y"));
                 Ok(())
             }
             (ValueExp::Vec3(l), ValueExp::Vec3(r)) => {
                 // Vector equality expands component-wise.
-                self.equations.push(Exp::sub(l[0].clone(), r[0].clone()));
-                self.equations.push(Exp::sub(l[1].clone(), r[1].clone()));
-                self.equations.push(Exp::sub(l[2].clone(), r[2].clone()));
+                self.push_scalar_equation(Exp::sub(l[0].clone(), r[0].clone()), span, Some("x"));
+                self.push_scalar_equation(Exp::sub(l[1].clone(), r[1].clone()), span, Some("y"));
+                self.push_scalar_equation(Exp::sub(l[2].clone(), r[2].clone()), span, Some("z"));
                 Ok(())
             }
             (l, r) => Err(self.error_at(
@@ -1261,10 +1544,12 @@ fn lower_program(
     ctx.push_scope(HashMap::new());
 
     if let Some(system) = pick_system(source, program, selected_system)? {
+        ctx.current_system_name = Some(system.name.clone());
         // Process system statements in source order.
         for stmt in &system.body {
             ctx.lower_system_stmt(stmt)?;
         }
+        ctx.current_system_name = None;
     } else {
         if program.statements.is_empty() {
             return Err(CompileError::message_only(
@@ -1436,13 +1721,50 @@ fn collect_var_names(exp: &Exp, out: &mut BTreeSet<String>) {
 mod tests {
     use super::*;
 
+    fn first_caret_column(pointer: &str) -> Option<usize> {
+        pointer.chars().position(|ch| ch == '^').map(|idx| idx + 1)
+    }
+
+    fn assert_parse_error_case(case_name: &str, source: &str, expected_line: usize) {
+        let err = parse_dsl(source).expect_err("parse should fail");
+        assert_eq!(
+            err.line, expected_line,
+            "{case_name}: unexpected error line"
+        );
+        assert!(err.column > 0, "{case_name}: expected non-zero column");
+        assert!(
+            err.message.contains("Syntax error") || err.message.contains("Incomplete input"),
+            "{case_name}: unexpected message '{}'",
+            err.message
+        );
+
+        let expected_snippet = source
+            .lines()
+            .nth(err.line.saturating_sub(1))
+            .unwrap_or_default();
+        assert_eq!(
+            err.snippet, expected_snippet,
+            "{case_name}: snippet should match source line"
+        );
+        assert!(
+            err.pointer.contains('^'),
+            "{case_name}: missing caret pointer"
+        );
+        assert_eq!(
+            first_caret_column(&err.pointer),
+            Some(err.column),
+            "{case_name}: caret column mismatch"
+        );
+    }
+
     #[test]
     fn reports_line_and_column_for_compile_errors() {
         let src = "scalar x;\nconstraint y == 1;";
         let err = compile_dsl(src).expect_err("compile should fail");
         assert_eq!(err.line, 2);
         assert_eq!(err.column, 12);
-        assert!(err.pointer.contains('^'));
+        assert_eq!(err.snippet, "constraint y == 1;");
+        assert_eq!(first_caret_column(&err.pointer), Some(err.column));
         assert!(err.to_string().contains("Unknown identifier 'y'"));
     }
 
@@ -1474,6 +1796,107 @@ mod tests {
         assert!(err.column > 0);
         assert!(err.message.contains("Syntax error"));
         assert!(err.pointer.contains('^'));
+    }
+
+    #[test]
+    fn reports_parse_errors_for_exhaustive_invalid_forms() {
+        let cases = vec![
+            ("missing system name", "system { export scalar x; }", 1usize),
+            (
+                "missing constraint_fn name",
+                "constraint_fn (x: scalar) { constraint x == 1; }",
+                1,
+            ),
+            (
+                "missing colon in parameter",
+                "constraint_fn bad(x scalar) { constraint x == 1; }",
+                1,
+            ),
+            (
+                "missing closing paren in parameter list",
+                "constraint_fn bad(x: scalar { constraint x == 1; }",
+                1,
+            ),
+            (
+                "missing semicolon after declaration",
+                "system s { export scalar x constraint x == 1; }",
+                1,
+            ),
+            (
+                "missing semicolon in constraint_fn body",
+                "constraint_fn bad(x: scalar) { constraint x == 1 }",
+                1,
+            ),
+            (
+                "missing lhs expression",
+                "system s { export scalar x; constraint == 1; }",
+                1,
+            ),
+            (
+                "missing rhs expression",
+                "system s { export scalar x; constraint x == ; }",
+                1,
+            ),
+            (
+                "malformed binary rhs",
+                "system s { export scalar x; constraint x == 1 + ; }",
+                1,
+            ),
+            ("unclosed use call", "system s { use foo(1, 2; }", 1),
+            ("trailing comma in use args", "system s { use foo(1,); }", 1),
+            ("missing comma in use args", "system s { use foo(1 2); }", 1),
+            (
+                "missing closing bracket in vector literal",
+                "system s { vec2d p; constraint p == [1, 2; }",
+                1,
+            ),
+            (
+                "invalid swizzle component",
+                "system s { vec2d p; constraint p.w == 1; }",
+                1,
+            ),
+            (
+                "invalid identifier in declaration",
+                "system s { export scalar 1x; }",
+                1,
+            ),
+            ("unknown type token", "system s { vector x; }", 1),
+            (
+                "unmatched parenthesis in expression",
+                "system s { export scalar x; constraint (x == 1; }",
+                1,
+            ),
+            (
+                "missing opening system brace",
+                "system s export scalar x; }",
+                1,
+            ),
+            (
+                "missing closing system brace",
+                "system s { export scalar x;",
+                1,
+            ),
+            (
+                "trailing garbage after valid system",
+                "system s { export scalar x; } trailing",
+                1,
+            ),
+            ("random garbage input", "@@@", 1),
+            (
+                "multiline missing rhs expression",
+                "system s {\nexport scalar x;\nconstraint x == ;\n}",
+                1,
+            ),
+            (
+                "multiline missing closing vector bracket",
+                "system s {\nvec2d p;\nconstraint p == [1, 2;\n}",
+                1,
+            ),
+        ];
+
+        for (case_name, source, expected_line) in cases {
+            assert_parse_error_case(case_name, source, expected_line);
+        }
     }
 
     #[test]
@@ -1591,5 +2014,216 @@ mod tests {
         let seed = model.bootstrap_seed().param_scalar("hidden", 12.0);
         let err = model.solve(seed).expect_err("solve should fail");
         assert!(matches!(err, SolveError::UnknownVariable(name) if name == "hidden"));
+    }
+
+    #[test]
+    fn reports_overconstrained_inconsistency_with_trace() {
+        let src = "system bad {\nexport scalar x;\nconstraint x == 0;\nconstraint x == 1;\n}";
+
+        let model = compile_dsl(src).expect("compile");
+        let err = model
+            .solve(model.bootstrap_seed().unknown_scalar("x", 0.5))
+            .expect_err("solve should fail");
+
+        let report = err
+            .failure_report()
+            .expect("expected structured failure report");
+        assert_eq!(report.kind, FailureKind::OverconstrainedInconsistency);
+        assert!(report.overconstrained);
+        assert!(report.equation_count > report.unknown_count);
+        let first = report
+            .issues
+            .iter()
+            .find(|issue| issue.line == 3)
+            .expect("missing issue for line 3");
+        assert_eq!(first.column, 17);
+        assert_eq!(first.snippet, "constraint x == 0;");
+        assert_eq!(first_caret_column(&first.pointer), Some(first.column));
+
+        let second = report
+            .issues
+            .iter()
+            .find(|issue| issue.line == 4)
+            .expect("missing issue for line 4");
+        assert_eq!(second.column, 17);
+        assert_eq!(second.snippet, "constraint x == 1;");
+        assert_eq!(first_caret_column(&second.pointer), Some(second.column));
+    }
+
+    #[test]
+    fn reports_non_convergence_with_trace() {
+        let src = "system impossible {\nexport scalar x;\nconstraint exp(x) == -1;\n}";
+
+        let model = compile_dsl(src).expect("compile");
+        let err = model
+            .solve(model.bootstrap_seed().unknown_scalar("x", 0.0))
+            .expect_err("solve should fail");
+
+        let report = err
+            .failure_report()
+            .expect("expected structured failure report");
+        assert!(!report.overconstrained);
+        assert!(matches!(
+            report.kind,
+            FailureKind::NonConvergence | FailureKind::SingularMatrix
+        ));
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.line == 3)
+            .expect("missing issue for line 3");
+        assert_eq!(issue.column, 22);
+        assert_eq!(issue.snippet, "constraint exp(x) == -1;");
+        assert_eq!(first_caret_column(&issue.pointer), Some(issue.column));
+        assert!(issue.magnitude >= 0.0);
+    }
+
+    #[test]
+    fn reports_non_convergence_with_line_search_trace() {
+        let src = "system impossible {\nexport scalar x;\nconstraint exp(x) == -1;\n}";
+
+        let model = compile_dsl(src).expect("compile");
+        let err = model
+            .solve_with_line_search(model.bootstrap_seed().unknown_scalar("x", 0.0))
+            .expect_err("line-search solve should fail");
+
+        let report = err
+            .failure_report()
+            .expect("expected structured failure report");
+        assert!(!report.overconstrained);
+        assert!(matches!(
+            report.kind,
+            FailureKind::NonConvergence | FailureKind::SingularMatrix
+        ));
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.line == 3)
+            .expect("missing issue for line 3");
+        assert_eq!(issue.column, 22);
+        assert_eq!(issue.snippet, "constraint exp(x) == -1;");
+        assert_eq!(first_caret_column(&issue.pointer), Some(issue.column));
+    }
+
+    #[test]
+    fn failure_report_absent_on_non_failure_errors() {
+        let src = r#"
+            system s {
+                export scalar x;
+                local scalar hidden;
+                constraint hidden == x + 1;
+                constraint x == 2;
+            }
+        "#;
+
+        let model = compile_dsl(src).expect("compile");
+        let err = model
+            .solve(model.bootstrap_seed().param_scalar("hidden", 12.0))
+            .expect_err("solve should fail");
+        assert!(matches!(err, SolveError::UnknownVariable(ref name) if name == "hidden"));
+        assert!(err.failure_report().is_none());
+    }
+
+    #[test]
+    fn classifies_all_failure_kinds() {
+        let src = r#"
+            system s {
+                export scalar x;
+                constraint x == 0;
+            }
+        "#;
+        let model = compile_dsl(src).expect("compile");
+
+        let make_diag = |msg: &str| RawSolverRunDiagnostic {
+            message: msg.to_string(),
+            iterations: 7,
+            error: 3.0,
+            values: HashMap::new(),
+            residuals: vec![3.0],
+        };
+
+        let singular =
+            model.map_solver_error(RawSolverError::SingularMatrix(make_diag("singular")), 1);
+        let singular = singular
+            .failure_report()
+            .expect("expected singular failure report");
+        assert_eq!(singular.kind, FailureKind::SingularMatrix);
+
+        let non_converged = model.map_solver_error(
+            RawSolverError::NoConvergence(make_diag("no convergence")),
+            1,
+        );
+        let non_converged = non_converged
+            .failure_report()
+            .expect("expected non-convergence report");
+        assert_eq!(non_converged.kind, FailureKind::NonConvergence);
+
+        let overconstrained = model.map_solver_error(
+            RawSolverError::NoConvergence(make_diag("overconstrained")),
+            0,
+        );
+        let overconstrained = overconstrained
+            .failure_report()
+            .expect("expected overconstrained report");
+        assert_eq!(
+            overconstrained.kind,
+            FailureKind::OverconstrainedInconsistency
+        );
+    }
+
+    #[test]
+    fn failure_issues_are_sorted_by_residual_magnitude() {
+        let src = r#"
+            system bad {
+                export scalar x;
+                constraint x == 0;
+                constraint x == 2;
+                constraint x == 10;
+            }
+        "#;
+
+        let model = compile_dsl(src).expect("compile");
+        let err = model
+            .solve(model.bootstrap_seed().unknown_scalar("x", 0.0))
+            .expect_err("solve should fail");
+        let report = err
+            .failure_report()
+            .expect("expected structured failure report");
+        assert!(!report.issues.is_empty());
+        for pair in report.issues.windows(2) {
+            assert!(pair[0].magnitude >= pair[1].magnitude);
+        }
+    }
+
+    #[test]
+    fn trace_contains_system_and_use_context() {
+        let src = "constraint_fn contradictory(v: scalar) {\nconstraint v == 0;\nconstraint v == 1;\n}\n\nsystem traced {\nexport scalar x;\nuse contradictory(x);\n}";
+
+        let model = compile_dsl(src).expect("compile");
+        let err = model
+            .solve(model.bootstrap_seed().unknown_scalar("x", 0.5))
+            .expect_err("solve should fail");
+        let report = err
+            .failure_report()
+            .expect("expected structured failure report");
+        assert!(!report.issues.is_empty());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.description.contains("system traced"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.description.contains("use contradictory"))
+        );
+        assert!(report.issues.iter().any(|issue| {
+            (issue.line == 2 || issue.line == 3)
+                && issue.column == 17
+                && issue.snippet.starts_with("constraint v ==")
+                && first_caret_column(&issue.pointer) == Some(issue.column)
+        }));
     }
 }
