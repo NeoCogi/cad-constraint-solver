@@ -32,6 +32,8 @@ use std::fmt;
 pub struct CompileError {
     /// Human-readable error message.
     pub message: String,
+    /// Source file/path label (`""` when unavailable).
+    pub file: String,
     /// 1-based line number (`0` when unavailable).
     pub line: usize,
     /// 1-based column number (`0` when unavailable).
@@ -47,6 +49,19 @@ impl CompileError {
     pub fn message_only(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            file: String::new(),
+            line: 0,
+            column: 0,
+            snippet: String::new(),
+            pointer: String::new(),
+        }
+    }
+
+    /// Creates an error with source-file label but no line/column info.
+    pub fn message_in_file(message: impl Into<String>, file: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            file: file.into(),
             line: 0,
             column: 0,
             snippet: String::new(),
@@ -56,7 +71,18 @@ impl CompileError {
 
     /// Creates a source-mapped diagnostic from a [`SourceSpan`].
     pub fn from_span(message: impl Into<String>, source: &str, span: &SourceSpan) -> Self {
+        Self::from_span_in_source(message, "<inline>", source, span)
+    }
+
+    /// Creates a source-mapped diagnostic from a [`SourceSpan`] and source label.
+    pub fn from_span_in_source(
+        message: impl Into<String>,
+        file: impl Into<String>,
+        source: &str,
+        span: &SourceSpan,
+    ) -> Self {
         let message = message.into();
+        let file = file.into();
         // Pull the exact source line where the parser/lowering reported the span.
         let snippet = source
             .lines()
@@ -74,6 +100,7 @@ impl CompileError {
 
         Self {
             message,
+            file,
             line: span.line,
             column: span.column,
             snippet,
@@ -85,13 +112,22 @@ impl CompileError {
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.line == 0 || self.column == 0 {
-            return write!(f, "{}", self.message);
+            if self.file.is_empty() {
+                return write!(f, "{}", self.message);
+            }
+            return write!(f, "{} ({})", self.message, self.file);
         }
+
+        let location = if self.file.is_empty() {
+            format!("line {}, column {}", self.line, self.column)
+        } else {
+            format!("{}:{}:{}", self.file, self.line, self.column)
+        };
 
         write!(
             f,
-            "{}\n --> line {}, column {}\n  |\n{:>3} | {}\n  | {}",
-            self.message, self.line, self.column, self.line, self.snippet, self.pointer
+            "{}\n --> {}\n  |\n{:>3} | {}\n  | {}",
+            self.message, location, self.line, self.snippet, self.pointer
         )
     }
 }

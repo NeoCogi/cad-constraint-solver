@@ -265,9 +265,20 @@ pub struct System {
     pub span: SourceSpan,
 }
 
+/// Top-level import declaration (`import "path.dsl";`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    /// Imported path exactly as written in source.
+    pub path: String,
+    /// Source location for diagnostics.
+    pub span: SourceSpan,
+}
+
 /// Full parsed program.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
+    /// Top-level imports in source order.
+    pub imports: Vec<Import>,
     /// Top-level reusable constraint functions.
     pub constraint_fns: Vec<ConstraintFn>,
     /// Top-level named systems.

@@ -10,6 +10,7 @@ It parses typed DSL source, lowers it into scalar `constraint_solver::Exp` equat
 
 - Typed DSL symbols: `scalar`, `vec2d`/`vec2f`, `vec3d`/`vec3f`
 - Reusable `constraint_fn` blocks and `use` composition
+- Multi-file project support via top-level `import "path.dsl";`
 - Named `system` blocks with `export` (public API) and `local` (internal) visibility
 - Built-in math/vector helpers: `dot2`, `dot3`, `length2`, `length3`, `sin`, `cos`, `ln`, `exp`
 - Solve seed helpers for scalar/vec2/vec3 values and unknown selection
@@ -52,6 +53,7 @@ use some_constraint_fn(args...);
 ### Structure
 
 ```text
+import "constraints/common.dsl";
 constraint_fn name(param: type, ...) { ... }
 system system_name { ... }
 ```
@@ -144,12 +146,54 @@ assert!((r - 5.0).abs() < 1e-6);
 # Ok::<(), cad_constraint_solver::SolveError>(())
 ```
 
+### Multi-File Project Compile
+
+```rust
+use cad_constraint_solver::{compile_dsl_project, DslSource};
+use rs_math3d::Vec2d;
+
+let sources = vec![
+    DslSource::new(
+        "constraints/2d.dsl",
+        r#"
+        constraint_fn pin(p: vec2d) {
+            constraint p == [3, 4];
+        }
+        "#,
+    ),
+    DslSource::new(
+        "systems/main.dsl",
+        r#"
+        import "../constraints/2d.dsl";
+        system s {
+            export vec2d p;
+            use pin(p);
+        }
+        "#,
+    ),
+];
+
+let model = compile_dsl_project("systems/main.dsl", &sources)?;
+let result = model.solve(
+    model
+        .bootstrap_seed()
+        .unknown_vec2d("p", Vec2d::new(0.0, 0.0)),
+)?;
+let p = result.vec2d("p")?;
+assert!((p.x - 3.0).abs() < 1e-8);
+assert!((p.y - 4.0).abs() < 1e-8);
+# Ok::<(), cad_constraint_solver::SolveError>(())
+```
+
 ## Public API Overview
 
 - Parsing/compilation:
   - `parse_dsl(source) -> Result<Program, CompileError>`
   - `compile_dsl(source) -> Result<Model, CompileError>`
   - `compile_dsl_system(source, name) -> Result<Model, CompileError>`
+  - `compile_dsl_project(entry_path, sources) -> Result<Model, CompileError>`
+  - `compile_dsl_project_system(entry_path, name, sources) -> Result<Model, CompileError>`
+  - `compile_dsl_project_with_loader(entry_path, system_name, loader) -> Result<Model, CompileError>`
   - `compile_with_bootstrap(source) -> Result<(Model, SolveSeed), CompileError>`
 - Solve:
   - `model.solve(seed)`
@@ -183,6 +227,7 @@ Visibility rules:
 
 Parser/lowering errors include exact source location info:
 - `message`
+- `file` (source path/label)
 - `line` (1-based)
 - `column` (1-based)
 - `snippet` (source line text)
@@ -197,6 +242,7 @@ let src = "scalar x;\nconstraint y == 1;";
 let err = compile_dsl(src).unwrap_err();
 
 println!("{}", err.message);
+println!("file={}", err.file);
 println!("line={}, col={}", err.line, err.column);
 println!("{}", err.snippet);
 println!("{}", err.pointer);
@@ -210,7 +256,8 @@ When solving fails, you get a structured `SolveFailureReport`:
 - `residuals`, solver `values`
 - `issues`: top residual equations, each with:
   - `description` (includes system/use-call context)
-  - `line`, `column`, `snippet`, `pointer`
+  - `file`, `line`, `column`, `snippet`, `pointer`
+  - `traceback` frames (`use` call chain with file/line/column/snippet/pointer)
   - `residual`, `magnitude`
 
 Example handling:
@@ -228,11 +275,17 @@ if let SolveError::Failure(report) = err {
     println!("failure: {:?} residual={}", report.kind, report.error);
     for issue in &report.issues {
         println!(
-            "eq#{}, line {}, col {}: {}",
-            issue.equation_index, issue.line, issue.column, issue.description
+            "eq#{}, {}:{}:{}: {}",
+            issue.equation_index, issue.file, issue.line, issue.column, issue.description
         );
         println!("{}", issue.snippet);
         println!("{}", issue.pointer);
+        for frame in &issue.traceback {
+            println!(
+                "  via use {} at {}:{}:{}",
+                frame.function, frame.file, frame.line, frame.column
+            );
+        }
     }
 }
 ```
