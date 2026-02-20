@@ -35,6 +35,12 @@ fn first_caret_column(pointer: &str) -> Option<usize> {
     pointer.chars().position(|ch| ch == '^').map(|idx| idx + 1)
 }
 
+fn compile_stdlib_entry_system(entry_source: &str, system_name: &str) -> Model {
+    let sources = vec![DslSource::new("systems/main.dsl", entry_source)];
+    compile_dsl_project_system_with_stdlib("systems/main.dsl", system_name, &sources)
+        .expect("compile")
+}
+
 fn assert_parse_error_case(case_name: &str, source: &str, expected_line: usize) {
     let err = parse_dsl(source).expect_err("parse should fail");
     assert_eq!(
@@ -824,4 +830,509 @@ fn rejects_recursive_system_calls() {
         err.message
             .contains("Recursive callable invocation is not supported")
     );
+}
+
+#[test]
+fn provides_embedded_standard_library_sources() {
+    let sources = standard_library_sources();
+    assert!(sources.iter().any(|src| src.path == STDLIB_STD2D_PATH));
+    assert!(sources.iter().any(|src| src.path == STDLIB_STD3D_PATH));
+    assert!(
+        sources
+            .iter()
+            .find(|src| src.path == STDLIB_STD2D_PATH)
+            .map(|src| src.source.contains("system c2_distance_pp"))
+            .unwrap_or(false)
+    );
+    assert!(
+        sources
+            .iter()
+            .find(|src| src.path == STDLIB_STD3D_PATH)
+            .map(|src| src.source.contains("system c3_distance_pp"))
+            .unwrap_or(false)
+    );
+}
+
+#[test]
+fn solves_project_with_embedded_std2d_library() {
+    let sources = vec![DslSource::new(
+        "systems/main.dsl",
+        r#"
+            import "../stdlib/std2d.dsl";
+
+            system main(inout vec2d a, inout vec2d b, in scalar d) {
+                c2_distance_pp(a, b, d);
+                constraint a == [0, 0];
+                constraint b.y == 0;
+            }
+        "#,
+    )];
+
+    let model = compile_dsl_project_system_with_stdlib("systems/main.dsl", "main", &sources)
+        .expect("compile");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("a", Vec2d::new(0.0, 0.0))
+        .unknown_vec2d("b", Vec2d::new(4.0, 0.1))
+        .param_scalar("d", 5.0);
+    let result = model.solve(seed).expect("solve");
+    let b = result.vec2d("b").expect("b");
+    assert!((b.x - 5.0).abs() < 1e-6);
+    assert!(b.y.abs() < 1e-6);
+}
+
+#[test]
+fn solves_project_with_embedded_std3d_library() {
+    let sources = vec![DslSource::new(
+        "systems/main.dsl",
+        r#"
+            import "../stdlib/std3d.dsl";
+
+            system main(inout vec3d p) {
+                c3_point_on_plane(p, [0, 0, 0], [0, 0, 1]);
+                constraint p.x == 2;
+                constraint p.y == -1;
+            }
+        "#,
+    )];
+
+    let model = compile_dsl_project_system_with_stdlib("systems/main.dsl", "main", &sources)
+        .expect("compile");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec3d("p", Vec3d::new(2.1, -1.2, 0.8));
+    let result = model.solve(seed).expect("solve");
+    let p = result.vec3d("p").expect("p");
+    assert!((p.x - 2.0).abs() < 1e-8);
+    assert!((p.y + 1.0).abs() < 1e-8);
+    assert!(p.z.abs() < 1e-8);
+}
+
+#[test]
+fn std2d_simple_point_on_circle() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d p, in vec2d c, in scalar r) {
+            c2_point_on_circle(p, c, r);
+            constraint p.y == 0;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("p", Vec2d::new(4.9, 0.2))
+        .param_vec2d("c", Vec2d::new(0.0, 0.0))
+        .param_scalar("r", 5.0);
+    let result = model.solve(seed).expect("solve");
+    let p = result.vec2d("p").expect("p");
+    assert!((p.x - 5.0).abs() < 1e-6);
+    assert!(p.y.abs() < 1e-6);
+}
+
+#[test]
+fn std2d_simple_diameter_constraint() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d a, inout vec2d b) {
+            constraint a == [0, 0];
+            c2_horizontal(a, b);
+            c2_diameter(a, b, 10);
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("a", Vec2d::new(0.1, -0.2))
+        .unknown_vec2d("b", Vec2d::new(9.7, 0.2));
+    let result = model.solve(seed).expect("solve");
+    let b = result.vec2d("b").expect("b");
+    assert!((b.x - 10.0).abs() < 1e-6);
+    assert!(b.y.abs() < 1e-6);
+}
+
+#[test]
+fn std2d_simple_line_circle_tangent() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d center, in scalar r) {
+            c2_tangent_line_circle([0, 0], [1, 0], center, r, 1);
+            constraint center.x == 3;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("center", Vec2d::new(2.8, 1.7))
+        .param_scalar("r", 2.0);
+    let result = model.solve(seed).expect("solve");
+    let c = result.vec2d("center").expect("center");
+    assert!((c.x - 3.0).abs() < 1e-6);
+    assert!((c.y - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn std2d_simple_circle_circle_intersection() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d p) {
+            c2_point_on_circle(p, [0, 0], 5);
+            c2_point_on_circle(p, [8, 0], 5);
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("p", Vec2d::new(4.2, 2.8));
+    let result = model.solve(seed).expect("solve");
+    let p = result.vec2d("p").expect("p");
+    assert!((p.x - 4.0).abs() < 1e-6);
+    assert!((p.y - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn std2d_medium_hdist_vdist_and_equal_length() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d a, inout vec2d b, inout vec2d c, inout vec2d d) {
+            constraint a == [0, 0];
+            c2_hdist(a, b, 4);
+            c2_vdist(a, b, 3);
+
+            constraint c == [1, 1];
+            c2_horizontal(c, d);
+            c2_equal_length(a, b, c, d);
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("a", Vec2d::new(0.2, -0.1))
+        .unknown_vec2d("b", Vec2d::new(3.7, 3.3))
+        .unknown_vec2d("c", Vec2d::new(1.1, 1.1))
+        .unknown_vec2d("d", Vec2d::new(5.8, 0.9));
+    let result = model.solve(seed).expect("solve");
+    let b = result.vec2d("b").expect("b");
+    let d = result.vec2d("d").expect("d");
+    assert!((b.x - 4.0).abs() < 1e-6);
+    assert!((b.y - 3.0).abs() < 1e-6);
+    assert!((d.x - 6.0).abs() < 1e-6);
+    assert!((d.y - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn std2d_medium_midpoint_collinear_and_parallel_perpendicular() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(
+            inout vec2d a,
+            inout vec2d b,
+            inout vec2d m,
+            inout vec2d p,
+            inout vec2d b1
+        ) {
+            constraint a == [0, 0];
+            constraint b == [10, 0];
+            c2_midpoint(m, a, b);
+            c2_collinear(p, a, b);
+            constraint p.x == 7;
+
+            c2_parallel([0, 0], [2, 0], [1, 1], b1);
+            c2_perpendicular([1, 1], b1, [0, 0], [0, 1]);
+            c2_distance_pp([1, 1], b1, 4);
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("a", Vec2d::new(-0.1, 0.1))
+        .unknown_vec2d("b", Vec2d::new(9.7, -0.2))
+        .unknown_vec2d("m", Vec2d::new(4.5, 0.2))
+        .unknown_vec2d("p", Vec2d::new(7.0, 0.5))
+        .unknown_vec2d("b1", Vec2d::new(5.1, 1.2));
+    let result = model.solve(seed).expect("solve");
+    let m = result.vec2d("m").expect("m");
+    let p = result.vec2d("p").expect("p");
+    let b1 = result.vec2d("b1").expect("b1");
+    assert!((m.x - 5.0).abs() < 1e-6);
+    assert!(m.y.abs() < 1e-6);
+    assert!((p.x - 7.0).abs() < 1e-6);
+    assert!(p.y.abs() < 1e-6);
+    assert!((b1.x - 5.0).abs() < 1e-6);
+    assert!((b1.y - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn std2d_medium_angle_equal_angle_ratio_diff_concentric_radius() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d q, inout vec2d r, inout vec2d p) {
+            c2_angle_ll([0, 0], [1, 0], [0, 0], q, 1.57079632679);
+            c2_distance_pp([0, 0], q, 2);
+
+            c2_equal_angle([0, 0], [1, 0], [0, 1], [0, 0], [2, 0], r);
+            c2_distance_pp([0, 0], r, 2);
+
+            c2_length_ratio([0, 0], [6, 0], [0, 1], [3, 1], 2);
+            c2_length_diff([0, 0], [6, 0], [0, 1], [3, 1], 3);
+
+            c2_concentric([1, 2], [1, 2]);
+            c2_radius([1, 2], p, 3);
+            c2_point_on_circle(p, [1, 2], 3);
+            constraint p.y == 2;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("q", Vec2d::new(0.2, 1.9))
+        .unknown_vec2d("r", Vec2d::new(-0.1, 2.1))
+        .unknown_vec2d("p", Vec2d::new(3.8, 2.2));
+    let result = model.solve(seed).expect("solve");
+    let q = result.vec2d("q").expect("q");
+    let r = result.vec2d("r").expect("r");
+    let p = result.vec2d("p").expect("p");
+    assert!(q.x.abs() < 1e-6);
+    assert!((q.y - 2.0).abs() < 1e-6);
+    assert!(r.x.abs() < 1e-6);
+    assert!((r.y - 2.0).abs() < 1e-6);
+    assert!((p.x - 4.0).abs() < 1e-6);
+    assert!((p.y - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn std2d_high_two_equal_circles_tangent_to_two_lines_and_each_other() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d c1, inout vec2d c2, inout scalar r) {
+            c2_tangent_line_circle([0, 0], [1, 0], c1, r, 1);
+            c2_tangent_line_circle([0, 10], [1, 10], c1, r, -1);
+            c2_tangent_line_circle([0, 0], [1, 0], c2, r, 1);
+            c2_tangent_line_circle([0, 10], [1, 10], c2, r, -1);
+            c2_tangent_circle_circle(c1, r, c2, r, 1);
+            constraint c1.x == 0;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("c1", Vec2d::new(0.0, 4.4))
+        .unknown_vec2d("c2", Vec2d::new(9.0, 5.8))
+        .unknown_scalar("r", 4.2);
+    let result = model.solve_with_line_search(seed).expect("solve");
+    let c1 = result.vec2d("c1").expect("c1");
+    let c2 = result.vec2d("c2").expect("c2");
+    let r = result.scalar("r").expect("r");
+    assert!((r - 5.0).abs() < 1e-6);
+    assert!((c1.y - 5.0).abs() < 1e-6);
+    assert!((c2.y - 5.0).abs() < 1e-6);
+    assert!(c1.x.abs() < 1e-6);
+    assert!((c2.x - 10.0).abs() < 1e-5);
+}
+
+#[test]
+fn std2d_high_circle_intersection_pair_with_symmetry() {
+    let src = r#"
+        import "../stdlib/std2d.dsl";
+
+        system main(inout vec2d p1, inout vec2d p2) {
+            c2_point_on_circle(p1, [0, 0], 5);
+            c2_point_on_circle(p1, [8, 0], 5);
+            c2_point_on_circle(p2, [0, 0], 5);
+            c2_point_on_circle(p2, [8, 0], 5);
+            c2_symmetric_about_line(p1, p2, [0, 0], [1, 0]);
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec2d("p1", Vec2d::new(4.0, 2.9))
+        .unknown_vec2d("p2", Vec2d::new(4.0, -2.7));
+    let result = model.solve(seed).expect("solve");
+    let p1 = result.vec2d("p1").expect("p1");
+    let p2 = result.vec2d("p2").expect("p2");
+    assert!((p1.x - 4.0).abs() < 1e-6);
+    assert!((p2.x - 4.0).abs() < 1e-6);
+    assert!((p1.y + p2.y).abs() < 1e-6);
+    assert!((p1.y.abs() - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn std3d_simple_point_on_line_and_plane_signed_distance() {
+    let src = r#"
+        import "../stdlib/std3d.dsl";
+
+        system main(inout vec3d p, inout vec3d q) {
+            c3_point_on_line(p, [0, 0, 0], [1, 0, 0]);
+            c3_distance_pp([0, 0, 0], p, 5);
+
+            c3_distance_point_plane_signed(q, [0, 0, 0], [0, 0, 1], 2);
+            constraint q.x == 1;
+            constraint q.y == -3;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec3d("p", Vec3d::new(4.6, 0.4, -0.3))
+        .unknown_vec3d("q", Vec3d::new(1.2, -2.8, 1.8));
+    let result = model.solve(seed).expect("solve");
+    let p = result.vec3d("p").expect("p");
+    let q = result.vec3d("q").expect("q");
+    assert!((p.x - 5.0).abs() < 1e-6);
+    assert!(p.y.abs() < 1e-6);
+    assert!(p.z.abs() < 1e-6);
+    assert!((q.x - 1.0).abs() < 1e-6);
+    assert!((q.y + 3.0).abs() < 1e-6);
+    assert!((q.z - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn std3d_medium_parallel_perpendicular_and_angle_constraints() {
+    let src = r#"
+        import "../stdlib/std3d.dsl";
+
+        system main(inout vec3d b1, inout vec3d c1, inout vec3d v1, inout vec3d l1) {
+            c3_parallel_lines([0, 0, 0], [1, 0, 0], [0, 1, 0], b1);
+            c3_perpendicular_lines([0, 0, 0], [1, 0, 0], [0, 0, 0], c1);
+            c3_distance_pp([0, 1, 0], b1, 4);
+            c3_distance_pp([0, 0, 0], c1, 3);
+            constraint c1.y == 0;
+
+            c3_angle_ll([0, 0, 0], [1, 0, 0], [0, 0, 0], v1, 1.57079632679);
+            c3_distance_pp([0, 0, 0], v1, 2);
+            constraint v1.z == 0;
+
+            c3_angle_line_plane([0, 0, 0], l1, [0, 0, 1], 0);
+            c3_distance_pp([0, 0, 0], l1, 3);
+            constraint l1.y == 0;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec3d("b1", Vec3d::new(4.7, 1.2, 0.2))
+        .unknown_vec3d("c1", Vec3d::new(0.1, 0.2, 2.9))
+        .unknown_vec3d("v1", Vec3d::new(0.2, 1.8, 0.3))
+        .unknown_vec3d("l1", Vec3d::new(2.9, 0.2, 0.4));
+    let result = model.solve(seed).expect("solve");
+    let b1 = result.vec3d("b1").expect("b1");
+    let c1 = result.vec3d("c1").expect("c1");
+    let v1 = result.vec3d("v1").expect("v1");
+    let l1 = result.vec3d("l1").expect("l1");
+    assert!((b1.x - 4.0).abs() < 1e-6);
+    assert!((b1.y - 1.0).abs() < 1e-6);
+    assert!(b1.z.abs() < 1e-6);
+    assert!(c1.x.abs() < 1e-6);
+    assert!(c1.y.abs() < 1e-6);
+    assert!((c1.z - 3.0).abs() < 1e-6);
+    assert!(v1.x.abs() < 1e-6);
+    assert!((v1.y - 2.0).abs() < 1e-6);
+    assert!(v1.z.abs() < 1e-6);
+    assert!((l1.x - 3.0).abs() < 1e-6);
+    assert!(l1.y.abs() < 1e-6);
+    assert!(l1.z.abs() < 1e-6);
+}
+
+#[test]
+fn std3d_medium_tangent_and_distance_constraints() {
+    let src = r#"
+        import "../stdlib/std3d.dsl";
+
+        system main(inout vec3d c1, inout vec3d c2, inout vec3d p) {
+            c3_tangent_sphere_plane(c1, 2, [0, 0, 0], [0, 0, 1], 1);
+            c3_tangent_sphere_sphere(c1, 2, c2, 3, 1);
+            constraint c1 == [0, 0, 2];
+            constraint c2.y == 0;
+            constraint c2.z == 2;
+
+            c3_distance_point_line(p, [0, 0, 0], [1, 0, 0], 5);
+            constraint p.x == 2;
+            constraint p.y == 4;
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec3d("c1", Vec3d::new(0.2, -0.1, 2.1))
+        .unknown_vec3d("c2", Vec3d::new(4.8, 0.3, 2.2))
+        .unknown_vec3d("p", Vec3d::new(2.1, 3.9, 2.8));
+    let result = model.solve(seed).expect("solve");
+    let c2 = result.vec3d("c2").expect("c2");
+    let p = result.vec3d("p").expect("p");
+    assert!((c2.x - 5.0).abs() < 1e-6);
+    assert!(c2.y.abs() < 1e-6);
+    assert!((c2.z - 2.0).abs() < 1e-6);
+    assert!((p.x - 2.0).abs() < 1e-6);
+    assert!((p.y - 4.0).abs() < 1e-6);
+    assert!((p.z - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn std3d_high_line_line_and_plane_plane_and_sphere_constraints() {
+    let src = r#"
+        import "../stdlib/std3d.dsl";
+
+        system main(
+            inout vec3d b0,
+            inout vec3d b1,
+            inout vec3d p2,
+            inout vec3d n2,
+            inout vec3d c2,
+            inout scalar r1,
+            inout scalar r2
+        ) {
+            c3_distance_line_line([0, 0, 0], [1, 0, 0], b0, b1, 3);
+            c3_parallel_lines([0, 0, 0], [1, 0, 0], b0, b1);
+            constraint b0.x == 0;
+            constraint b1.x == 1;
+            constraint b0.z == 0;
+            constraint b1.z == 0;
+
+            c3_distance_plane_plane([0, 0, 0], [0, 0, 1], p2, n2, 4);
+            c3_parallel_planes([0, 0, 1], n2);
+            c3_perpendicular_planes([0, 0, 1], [1, 0, 0]);
+            constraint p2.x == 0;
+            constraint p2.y == 0;
+
+            c3_concentric_spheres([1, 2, 3], c2);
+            c3_equal_radius(r1, r2);
+            constraint r1 == 2;
+            c3_point_on_sphere([3, 2, 3], c2, r2);
+        }
+    "#;
+    let model = compile_stdlib_entry_system(src, "main");
+    let seed = model
+        .bootstrap_seed()
+        .unknown_vec3d("b0", Vec3d::new(0.1, 2.8, 0.1))
+        .unknown_vec3d("b1", Vec3d::new(0.9, 3.1, -0.2))
+        .unknown_vec3d("p2", Vec3d::new(0.2, -0.1, 3.8))
+        .unknown_vec3d("n2", Vec3d::new(0.0, 0.0, 0.7))
+        .unknown_vec3d("c2", Vec3d::new(1.1, 2.1, 2.8))
+        .unknown_scalar("r1", 2.2)
+        .unknown_scalar("r2", 1.9);
+    let result = model.solve_with_line_search(seed).expect("solve");
+    let b0 = result.vec3d("b0").expect("b0");
+    let b1 = result.vec3d("b1").expect("b1");
+    let p2 = result.vec3d("p2").expect("p2");
+    let c2 = result.vec3d("c2").expect("c2");
+    let r1 = result.scalar("r1").expect("r1");
+    let r2 = result.scalar("r2").expect("r2");
+    assert!((b0.y - 3.0).abs() < 1e-5);
+    assert!((b1.y - 3.0).abs() < 1e-5);
+    assert!(b0.z.abs() < 1e-6);
+    assert!(b1.z.abs() < 1e-6);
+    assert!((p2.z - 4.0).abs() < 1e-5);
+    assert!((c2.x - 1.0).abs() < 1e-6);
+    assert!((c2.y - 2.0).abs() < 1e-6);
+    assert!((c2.z - 3.0).abs() < 1e-6);
+    assert!((r1 - 2.0).abs() < 1e-6);
+    assert!((r2 - 2.0).abs() < 1e-6);
 }

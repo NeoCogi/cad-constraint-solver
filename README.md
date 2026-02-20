@@ -12,6 +12,9 @@ It parses typed DSL source, lowers it into scalar `constraint_solver::Exp` equat
 - Preferred callable model: parameterized `system` blocks with `in` / `out` / `inout` parameters
 - Direct call statements: `helper(args...);`
 - Multi-file project support via top-level `import "path.dsl";`
+- Embedded standard-library modules:
+  - `stdlib/std2d.dsl`
+  - `stdlib/std3d.dsl`
 - Built-in math/vector helpers: `dot2`, `dot3`, `length2`, `length3`, `sin`, `cos`, `ln`, `exp`
 - Solve seed helpers for scalar/vec2/vec3 values and unknown selection
 - Rich diagnostics:
@@ -71,6 +74,17 @@ import "constraints/common.dsl";
 system helper(in scalar a, out scalar b) { ... }
 system main(out scalar x) { helper(1, x); }
 ```
+
+### Standard Library Modules
+
+The crate ships embedded DSL sources for common CAD constraints:
+
+- `stdlib/std2d.dsl`
+- `stdlib/std3d.dsl`
+
+Both files are heavily documented inline and contain composable systems for
+coincidence, distances, angles, parallel/perpendicular relations, tangency,
+symmetry, and related geometric constructions.
 
 ### Expressions
 
@@ -229,6 +243,36 @@ assert!((result.scalar("v")? - 5.0).abs() < 1e-8);
 # Ok::<(), cad_constraint_solver::SolveError>(())
 ```
 
+### Multi-File Compile With Embedded `std2d` / `std3d`
+
+```rust
+use cad_constraint_solver::{compile_dsl_project_system_with_stdlib, DslSource};
+use rs_math3d::Vec2d;
+
+let sources = vec![DslSource::new(
+    "systems/main.dsl",
+    r#"
+    import "../stdlib/std2d.dsl";
+
+    system main(inout vec2d a, inout vec2d b, in scalar d) {
+        c2_distance_pp(a, b, d);
+        constraint a == [0, 0];
+        constraint b.y == 0;
+    }
+    "#,
+)];
+
+let model = compile_dsl_project_system_with_stdlib("systems/main.dsl", "main", &sources)?;
+let seed = model
+    .bootstrap_seed()
+    .unknown_vec2d("a", Vec2d::new(0.0, 0.0))
+    .unknown_vec2d("b", Vec2d::new(4.0, 0.1))
+    .param_scalar("d", 5.0);
+let result = model.solve(seed)?;
+assert!((result.vec2d("b")?.x - 5.0).abs() < 1e-6);
+# Ok::<(), cad_constraint_solver::SolveError>(())
+```
+
 ## Public API Overview
 
 - Parsing/compilation:
@@ -237,8 +281,12 @@ assert!((result.scalar("v")? - 5.0).abs() < 1e-8);
   - `compile_dsl_system(source, name) -> Result<Model, CompileError>`
   - `compile_dsl_project(entry_path, sources) -> Result<Model, CompileError>`
   - `compile_dsl_project_system(entry_path, name, sources) -> Result<Model, CompileError>`
+  - `compile_dsl_project_with_stdlib(entry_path, sources) -> Result<Model, CompileError>`
+  - `compile_dsl_project_system_with_stdlib(entry_path, name, sources) -> Result<Model, CompileError>`
   - `compile_dsl_project_with_loader(entry_path, system_name, loader) -> Result<Model, CompileError>`
   - `compile_with_bootstrap(source) -> Result<(Model, SolveSeed), CompileError>`
+  - `standard_library_sources() -> Vec<DslSource>`
+  - `merge_with_standard_library_sources(sources) -> Vec<DslSource>`
 - Solve:
   - `model.solve(seed)`
   - `model.solve_with_line_search(seed)`

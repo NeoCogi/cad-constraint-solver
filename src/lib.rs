@@ -27,6 +27,7 @@ SOFTWARE.
 //! This crate provides:
 //! - Typed DSL parsing (`scalar`, `vec2d`, `vec3d`, imports).
 //! - Multi-file project composition via `import "..."`.
+//! - Embedded standard-library DSL modules (`stdlib/std2d.dsl`, `stdlib/std3d.dsl`).
 //! - Lowering/type-checking to scalar `constraint_solver::Exp` equations.
 //! - Solve-time adapters for `rs_math3d` vector types.
 //! - Source-mapped compile/solve diagnostics.
@@ -46,6 +47,7 @@ mod diagnostics;
 mod model;
 mod parser;
 mod project;
+mod stdlib;
 
 pub use ast::{
     BinOp, CallStmt, Decl, Expr, ExprKind, Field, Import, Param, ParamMode, Program, SourceSpan,
@@ -57,6 +59,11 @@ pub use model::{
     SolveResult, SolveSeed, SymbolType,
 };
 pub use project::DslSource;
+pub use stdlib::{
+    STDLIB_STD2D_PATH, STDLIB_STD2D_SOURCE, STDLIB_STD3D_PATH, STDLIB_STD3D_SOURCE,
+    compile_dsl_project_system_with_stdlib, compile_dsl_project_with_stdlib,
+    merge_with_standard_library_sources, standard_library_sources,
+};
 
 use parser::parse_program;
 
