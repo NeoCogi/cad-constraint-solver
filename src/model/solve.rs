@@ -140,8 +140,7 @@ impl Model {
     }
 
     fn validate_seed(&self, seed: &super::SolveSeed) -> Result<(), SolveError> {
-        let public_name_set: BTreeSet<String> =
-            self.public_flattened_names.iter().cloned().collect();
+        let public_name_set: BTreeSet<String> = self.seed_flattened_names.iter().cloned().collect();
         let public_solver_set: BTreeSet<String> =
             self.public_solver_names.iter().cloned().collect();
 

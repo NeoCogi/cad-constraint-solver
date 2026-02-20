@@ -28,16 +28,18 @@ use super::*;
 
 /// Lowering context for one compilation unit.
 ///
-/// Holds function registry, scope stack, emitted equations, and inferred defaults.
+/// Holds system registry, scope stack, emitted equations, and inferred defaults.
 pub(super) struct LowerContext {
-    pub(super) functions: HashMap<String, ConstraintFnEntry>,
+    pub(super) systems: HashMap<String, SystemEntry>,
     pub(super) scopes: Vec<HashMap<String, ValueExp>>,
     pub(super) public_symbols: HashMap<String, SymbolType>,
     pub(super) equations: Vec<Exp>,
     pub(super) equation_origins: Vec<EquationOrigin>,
     pub(super) defaults: HashMap<String, f64>,
     pub(super) flattened_names: Vec<String>,
+    pub(super) seed_flattened_names: Vec<String>,
     pub(super) public_flattened_names: Vec<String>,
+    pub(super) unknown_selectable_flattened_names: Vec<String>,
     pub(super) invocation_counter: usize,
     pub(super) call_stack: Vec<IssueTraceFrame>,
     pub(super) current_system_name: Option<String>,
@@ -48,17 +50,19 @@ impl LowerContext {
     /// Creates a fresh lowering context bound to source text.
     pub(super) fn new(
         initial_doc: Rc<SourceDocument>,
-        functions: HashMap<String, ConstraintFnEntry>,
+        systems: HashMap<String, SystemEntry>,
     ) -> Self {
         Self {
-            functions,
+            systems,
             scopes: Vec::new(),
             public_symbols: HashMap::new(),
             equations: Vec::new(),
             equation_origins: Vec::new(),
             defaults: HashMap::new(),
             flattened_names: Vec::new(),
+            seed_flattened_names: Vec::new(),
             public_flattened_names: Vec::new(),
+            unknown_selectable_flattened_names: Vec::new(),
             invocation_counter: 0,
             call_stack: Vec::new(),
             current_system_name: None,
@@ -90,12 +94,17 @@ impl LowerContext {
         }
 
         let public_set: BTreeSet<String> = self.public_flattened_names.iter().cloned().collect();
+        let unknown_selectable_set: BTreeSet<String> = self
+            .unknown_selectable_flattened_names
+            .iter()
+            .cloned()
+            .collect();
         let mut public_solver = Vec::new();
         let mut hidden_solver = Vec::new();
         for name in &solver_vars {
-            if public_set.contains(name) {
+            if unknown_selectable_set.contains(name) {
                 public_solver.push(name.clone());
-            } else {
+            } else if !public_set.contains(name) {
                 hidden_solver.push(name.clone());
             }
         }
@@ -107,6 +116,7 @@ impl LowerContext {
             self.defaults,
             self.flattened_names,
             solver_vars.into_iter().collect(),
+            self.seed_flattened_names,
             self.public_flattened_names,
             public_solver,
             hidden_solver,
@@ -136,7 +146,7 @@ impl LowerContext {
                 })
                 .collect::<Vec<_>>()
                 .join(" -> ");
-            segments.push(format!("use {call_chain}"));
+            segments.push(format!("call {call_chain}"));
         }
 
         let mut description = if segments.is_empty() {

@@ -32,7 +32,7 @@ impl LowerContext {
         match &expr.kind {
             ExprKind::Number(v) => Ok(ValueExp::Scalar(Exp::val(*v))),
             ExprKind::Ident(name) => {
-                // Identifier lookup is scope-driven (params, locals, exported vars).
+                // Identifier lookup is scope-driven (params, locals, public vars).
                 let Some(value) = self.resolve_binding(name) else {
                     return Err(self.error_at(format!("Unknown identifier '{name}'"), &expr.span));
                 };

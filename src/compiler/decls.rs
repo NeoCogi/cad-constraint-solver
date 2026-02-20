@@ -34,6 +34,7 @@ impl LowerContext {
         canonical_base: &str,
         ty: SymbolType,
         expose_name: Option<&str>,
+        public_role: Option<PublicRole>,
         span: &SourceSpan,
     ) -> Result<(), CompileError> {
         if self.current_scope().contains_key(binding_name) {
@@ -55,13 +56,21 @@ impl LowerContext {
         if let Some(public_name) = expose_name {
             if self.public_symbols.contains_key(public_name) {
                 return Err(self.error_at(
-                    format!("Duplicate exported declaration for '{public_name}'"),
+                    format!("Duplicate public declaration for '{public_name}'"),
                     span,
                 ));
             }
             self.public_symbols.insert(public_name.to_string(), ty);
-            self.public_flattened_names
-                .extend(flattened_component_names(canonical_base, ty));
+            let components = flattened_component_names(canonical_base, ty);
+            self.public_flattened_names.extend(components.clone());
+            if let Some(role) = public_role {
+                if role.allows_seed() {
+                    self.seed_flattened_names.extend(components.clone());
+                }
+                if role.allows_unknown_selection() {
+                    self.unknown_selectable_flattened_names.extend(components);
+                }
+            }
         }
 
         Ok(())
@@ -73,9 +82,17 @@ impl LowerContext {
         decl: &Decl,
         canonical_base: &str,
         expose_name: Option<&str>,
+        public_role: Option<PublicRole>,
     ) -> Result<(), CompileError> {
         let ty = map_decl_type(decl.ty);
-        self.register_declaration(&decl.name, canonical_base, ty, expose_name, &decl.span)?;
+        self.register_declaration(
+            &decl.name,
+            canonical_base,
+            ty,
+            expose_name,
+            public_role,
+            &decl.span,
+        )?;
 
         if let Some(init) = &decl.init {
             // Treat declaration initializers as implicit equality constraints.
@@ -91,42 +108,64 @@ impl LowerContext {
         Ok(())
     }
 
+    /// Registers selected entry-system parameters in the root scope.
+    pub(super) fn lower_system_params(&mut self, params: &[Param]) -> Result<(), CompileError> {
+        for param in params {
+            let role = match param.mode {
+                ParamMode::In => PublicRole::In,
+                ParamMode::Out => PublicRole::Out,
+                ParamMode::InOut => PublicRole::InOut,
+            };
+            let ty = map_decl_type(param.ty);
+            self.register_declaration(
+                &param.name,
+                &param.name,
+                ty,
+                Some(&param.name),
+                Some(role),
+                &param.span,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Lowers one statement from a `system` block.
     pub(super) fn lower_system_stmt(&mut self, stmt: &SystemStmt) -> Result<(), CompileError> {
         match &stmt.kind {
-            SystemStmtKind::Decl { visibility, decl } => match visibility {
-                Visibility::Export => self.lower_decl(decl, &decl.name, Some(&decl.name)),
-                Visibility::Local => self.lower_decl(decl, &decl.name, None),
-            },
+            SystemStmtKind::Decl(decl) => self.lower_decl(decl, &decl.name, None, None),
             SystemStmtKind::ConstraintEq { lhs, rhs } => self.lower_constraint(lhs, rhs),
-            SystemStmtKind::Use(call) => self.lower_use(call),
+            SystemStmtKind::Call(call) => self.lower_call_stmt(call),
         }
     }
 
-    /// Lowers one legacy top-level statement.
-    pub(super) fn lower_legacy_stmt(&mut self, stmt: &Stmt) -> Result<(), CompileError> {
+    /// Lowers one top-level statement.
+    pub(super) fn lower_top_level_stmt(&mut self, stmt: &Stmt) -> Result<(), CompileError> {
         match &stmt.kind {
-            StmtKind::Decl(decl) => self.lower_decl(decl, &decl.name, Some(&decl.name)),
+            StmtKind::Decl(decl) => self.lower_decl(
+                decl,
+                &decl.name,
+                Some(&decl.name),
+                Some(PublicRole::TopLevel),
+            ),
             StmtKind::ConstraintEq { lhs, rhs } => self.lower_constraint(lhs, rhs),
-            StmtKind::Use(call) => self.lower_use(call),
+            StmtKind::Call(call) => self.lower_call_stmt(call),
         }
     }
 
-    /// Lowers one statement from a `constraint_fn` body.
-    pub(super) fn lower_function_stmt(
+    /// Lowers one statement from a called `system` body.
+    pub(super) fn lower_called_system_stmt(
         &mut self,
-        stmt: &Stmt,
+        stmt: &SystemStmt,
         namespace_prefix: &str,
     ) -> Result<(), CompileError> {
         match &stmt.kind {
-            StmtKind::Decl(decl) => {
-                // Function-local declarations are namespaced per invocation to avoid
-                // collisions between multiple `use` sites.
+            SystemStmtKind::Decl(decl) => {
+                // Declarations inside called systems are invocation-local.
                 let canonical_base = format!("{namespace_prefix}{}", decl.name);
-                self.lower_decl(decl, &canonical_base, None)
+                self.lower_decl(decl, &canonical_base, None, None)
             }
-            StmtKind::ConstraintEq { lhs, rhs } => self.lower_constraint(lhs, rhs),
-            StmtKind::Use(call) => self.lower_use(call),
+            SystemStmtKind::ConstraintEq { lhs, rhs } => self.lower_constraint(lhs, rhs),
+            SystemStmtKind::Call(call) => self.lower_call_stmt(call),
         }
     }
 }

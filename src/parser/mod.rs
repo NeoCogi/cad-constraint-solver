@@ -26,9 +26,9 @@ SOFTWARE.
 //!
 //! The grammar supports:
 //! - top-level `import "path.dsl";` declarations
-//! - top-level `constraint_fn` definitions
-//! - top-level `system` definitions
-//! - legacy top-level declarations/constraints
+//! - top-level `system` definitions with optional directional parameters
+//! - top-level declarations/constraints when no named `system` is used
+//! - call statements as `name(args...);`
 //!
 //! Expressions support:
 //! - numeric literals and identifiers
@@ -75,22 +75,19 @@ pub(crate) fn parse_program_in_source(
     };
 
     let mut imports = Vec::new();
-    let mut constraint_fns = Vec::new();
     let mut systems = Vec::new();
     let mut statements = Vec::new();
 
     for item in items {
         match item {
             TopItem::Import(import) => imports.push(import),
-            TopItem::ConstraintFn(def) => constraint_fns.push(def),
             TopItem::System(system) => systems.push(system),
-            TopItem::LegacyStmt(stmt) => statements.push(stmt),
+            TopItem::Stmt(stmt) => statements.push(stmt),
         }
     }
 
     Ok(Program {
         imports,
-        constraint_fns,
         systems,
         statements,
     })

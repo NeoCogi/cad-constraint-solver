@@ -59,7 +59,7 @@ pub enum SymbolType {
 pub struct Model {
     pub(crate) equations: Vec<Exp>,
     pub(crate) equation_origins: Vec<EquationOrigin>,
-    // Public API symbols only (`export` declarations, or legacy top-level decls).
+    // Public API symbols only (selected system params or top-level declarations).
     pub(crate) public_symbols: HashMap<String, SymbolType>,
     // Default seed values for *all* flattened variables (public + local).
     pub(crate) defaults: HashMap<String, f64>,
@@ -67,6 +67,8 @@ pub struct Model {
     pub(crate) flattened_names: Vec<String>,
     // All flattened variable names referenced by final equations.
     pub(crate) solver_names: Vec<String>,
+    // Flattened names that callers may provide in solve seeds.
+    pub(crate) seed_flattened_names: Vec<String>,
     // Public flattened names (subset of `flattened_names`).
     pub(crate) public_flattened_names: Vec<String>,
     // Public flattened names that are referenced by equations.
@@ -84,6 +86,7 @@ impl Model {
         defaults: HashMap<String, f64>,
         flattened_names: Vec<String>,
         solver_names: Vec<String>,
+        seed_flattened_names: Vec<String>,
         public_flattened_names: Vec<String>,
         public_solver_names: Vec<String>,
         hidden_solver_names: Vec<String>,
@@ -95,6 +98,7 @@ impl Model {
             defaults,
             flattened_names,
             solver_names,
+            seed_flattened_names,
             public_flattened_names,
             public_solver_names,
             hidden_solver_names,
@@ -130,7 +134,7 @@ impl Model {
         &self.public_solver_names
     }
 
-    /// Returns the declared public DSL type for a top-level symbol.
+    /// Returns the declared public DSL type for an externally visible symbol.
     pub fn symbol_type(&self, name: &str) -> Option<SymbolType> {
         self.public_symbols.get(name).copied()
     }
@@ -140,7 +144,7 @@ impl Model {
     /// Local/internal variables are intentionally omitted from this seed.
     pub fn bootstrap_seed(&self) -> SolveSeed {
         let mut initial = HashMap::new();
-        for name in &self.public_flattened_names {
+        for name in &self.seed_flattened_names {
             if let Some(value) = self.defaults.get(name) {
                 initial.insert(name.clone(), *value);
             }

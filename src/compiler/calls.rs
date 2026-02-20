@@ -22,106 +22,131 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-//! Lowering for `use` calls and equality constraints.
+//! Lowering for callable invocations and equality constraints.
 
 use super::*;
+use crate::ast::{ExprKind, ParamMode};
 
 impl LowerContext {
-    /// Instantiates and lowers a reusable `use constraint_fn(...)` call.
-    pub(super) fn lower_use(&mut self, use_stmt: &UseStmt) -> Result<(), CompileError> {
-        let Some(function_entry) = self.functions.get(&use_stmt.name).cloned() else {
-            return Err(self.error_at(
-                format!("Unknown constraint function '{}'", use_stmt.name),
-                &use_stmt.span,
-            ));
-        };
-        let function = function_entry.function;
+    /// Instantiates and lowers a callable invocation (`name(args...);`).
+    pub(super) fn lower_call_stmt(&mut self, call_stmt: &CallStmt) -> Result<(), CompileError> {
+        if let Some(system_entry) = self.systems.get(&call_stmt.name).cloned() {
+            return self.lower_system_call(call_stmt, system_entry);
+        }
+        Err(self.error_at(
+            format!("Unknown callable '{}'", call_stmt.name),
+            &call_stmt.span,
+        ))
+    }
+
+    fn lower_system_call(
+        &mut self,
+        call_stmt: &CallStmt,
+        system_entry: SystemEntry,
+    ) -> Result<(), CompileError> {
+        let called = system_entry.system;
 
         if self
             .call_stack
             .iter()
-            .any(|frame| frame.function == function.name)
+            .any(|frame| frame.function == called.name)
         {
             return Err(self.error_at(
                 format!(
-                    "Recursive constraint_fn invocation is not supported ('{}')",
-                    function.name
+                    "Recursive callable invocation is not supported ('{}')",
+                    called.name
                 ),
-                &use_stmt.span,
+                &call_stmt.span,
             ));
         }
 
-        if use_stmt.args.len() != function.params.len() {
+        if call_stmt.args.len() != called.params.len() {
             return Err(self.error_at(
                 format!(
-                    "constraint_fn '{}' expects {} arguments, found {}",
-                    function.name,
-                    function.params.len(),
-                    use_stmt.args.len()
+                    "system '{}' expects {} arguments, found {}",
+                    called.name,
+                    called.params.len(),
+                    call_stmt.args.len()
                 ),
-                &use_stmt.span,
+                &call_stmt.span,
             ));
         }
 
-        // Evaluate call arguments in caller scope first.
-        let mut lowered_args = Vec::with_capacity(use_stmt.args.len());
-        for arg in &use_stmt.args {
+        let mut lowered_args = Vec::with_capacity(call_stmt.args.len());
+        for arg in &call_stmt.args {
             lowered_args.push(self.lower_expr(arg)?);
         }
 
-        // Build invocation-local scope: params are aliases to lowered args.
         let mut param_scope = HashMap::new();
-        for (idx, (param, arg)) in function
+        for (idx, ((param, arg_expr), arg_value)) in called
             .params
             .iter()
+            .zip(call_stmt.args.iter())
             .zip(lowered_args.into_iter())
             .enumerate()
         {
             let expected = map_decl_type(param.ty);
-            if !matches_symbol_type(&arg, expected) {
-                let arg_span = &use_stmt.args[idx].span;
+            if !matches_symbol_type(&arg_value, expected) {
                 return Err(self.error_at(
                     format!(
-                        "Argument {} for '{}' expects {}, got {}",
+                        "Argument {} for system '{}' expects {}, got {}",
                         idx + 1,
-                        function.name,
+                        called.name,
                         symbol_type_name(expected),
-                        arg.type_name()
+                        arg_value.type_name()
                     ),
-                    arg_span,
+                    &arg_expr.span,
+                ));
+            }
+            if matches!(param.mode, ParamMode::Out | ParamMode::InOut)
+                && !is_assignable_argument(arg_expr)
+            {
+                return Err(self.error_at(
+                    format!(
+                        "Argument {} for '{}' {} parameter '{}' must be a variable identifier",
+                        idx + 1,
+                        called.name,
+                        if param.mode == ParamMode::Out {
+                            "out"
+                        } else {
+                            "inout"
+                        },
+                        param.name
+                    ),
+                    &arg_expr.span,
                 ));
             }
             if param_scope.contains_key(&param.name) {
                 return Err(self.error_at(
                     format!(
-                        "Duplicate parameter name '{}' in constraint_fn '{}'",
-                        param.name, function.name
+                        "Duplicate parameter name '{}' in system '{}'",
+                        param.name, called.name
                     ),
                     &param.span,
                 ));
             }
-            param_scope.insert(param.name.clone(), arg);
+            param_scope.insert(param.name.clone(), arg_value);
         }
 
         let doc = self.current_doc();
         let marker =
-            CompileError::from_span_in_source("use", &doc.path, &doc.source, &use_stmt.span);
+            CompileError::from_span_in_source("call", &doc.path, &doc.source, &call_stmt.span);
         self.call_stack.push(IssueTraceFrame {
-            function: function.name.clone(),
+            function: called.name.clone(),
             file: doc.path.clone(),
-            line: use_stmt.span.line,
-            column: use_stmt.span.column,
+            line: call_stmt.span.line,
+            column: call_stmt.span.column,
             snippet: marker.snippet,
             pointer: marker.pointer,
         });
         self.push_scope(param_scope);
-        self.push_doc(function_entry.doc.clone());
+        self.push_doc(system_entry.doc.clone());
 
         self.invocation_counter += 1;
-        let namespace_prefix = format!("__fn_{}_{}_", function.name, self.invocation_counter);
+        let namespace_prefix = format!("__sys_{}_{}_", called.name, self.invocation_counter);
 
-        for stmt in &function.body {
-            self.lower_function_stmt(stmt, &namespace_prefix)?;
+        for stmt in &called.body {
+            self.lower_called_system_stmt(stmt, &namespace_prefix)?;
         }
 
         self.pop_doc();
@@ -174,4 +199,8 @@ impl LowerContext {
             )),
         }
     }
+}
+
+fn is_assignable_argument(expr: &Expr) -> bool {
+    matches!(expr.kind, ExprKind::Ident(_))
 }

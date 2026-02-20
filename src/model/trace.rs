@@ -37,12 +37,12 @@ pub enum FailureKind {
     SingularMatrix,
 }
 
-/// One `use ...` invocation frame in an issue traceback.
+/// One callable invocation frame in an issue traceback.
 #[derive(Debug, Clone)]
 pub struct IssueTraceFrame {
-    /// Called constraint function name.
+    /// Called system name.
     pub function: String,
-    /// File containing the `use` call site.
+    /// File containing the call site.
     pub file: String,
     /// 1-based source line for call site.
     pub line: usize,
@@ -75,7 +75,7 @@ pub struct ConstraintIssue {
     pub snippet: String,
     /// Caret pointer for `snippet`.
     pub pointer: String,
-    /// `use` call chain frames leading to this constraint.
+    /// Call chain frames leading to this constraint.
     pub traceback: Vec<IssueTraceFrame>,
 }
 

@@ -172,8 +172,8 @@ pub enum StmtKind {
     Decl(Decl),
     /// Equality constraint statement (`constraint lhs == rhs;`).
     ConstraintEq { lhs: Expr, rhs: Expr },
-    /// Reusable constraint function invocation (`use name(args...);`).
-    Use(UseStmt),
+    /// Callable invocation statement (`name(args...);`).
+    Call(CallStmt),
 }
 
 /// Spanned statement node.
@@ -185,9 +185,9 @@ pub struct Stmt {
     pub span: SourceSpan,
 }
 
-/// Constraint function invocation.
+/// Parsed call statement.
 #[derive(Debug, Clone, PartialEq)]
-pub struct UseStmt {
+pub struct CallStmt {
     /// Function name.
     pub name: String,
     /// Call arguments.
@@ -199,6 +199,8 @@ pub struct UseStmt {
 /// Function parameter declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
+    /// Parameter direction mode.
+    pub mode: ParamMode,
     /// Parameter name.
     pub name: String,
     /// Parameter type.
@@ -207,42 +209,26 @@ pub struct Param {
     pub span: SourceSpan,
 }
 
-/// User-defined reusable constraint function.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConstraintFn {
-    /// Function name.
-    pub name: String,
-    /// Typed parameter list.
-    pub params: Vec<Param>,
-    /// Function body statements.
-    pub body: Vec<Stmt>,
-    /// Source location for diagnostics.
-    pub span: SourceSpan,
-}
-
-/// Visibility mode for system declarations.
+/// System/function parameter direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Visibility {
-    /// Exposed to public API setters/getters.
-    Export,
-    /// Internal variable; not directly mutable by callers.
-    Local,
+pub enum ParamMode {
+    /// Read-only input from caller.
+    In,
+    /// Write-only output to caller.
+    Out,
+    /// Read/write parameter.
+    InOut,
 }
 
 /// System-scoped statement variants.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemStmtKind {
-    /// System declaration with explicit visibility.
-    Decl {
-        /// Public vs local visibility.
-        visibility: Visibility,
-        /// Declaration payload.
-        decl: Decl,
-    },
+    /// Declaration statement.
+    Decl(Decl),
     /// Equality constraint statement.
     ConstraintEq { lhs: Expr, rhs: Expr },
-    /// Reusable constraint function invocation.
-    Use(UseStmt),
+    /// Callable invocation statement (`name(args...);`).
+    Call(CallStmt),
 }
 
 /// Spanned system statement node.
@@ -259,6 +245,8 @@ pub struct SystemStmt {
 pub struct System {
     /// System name.
     pub name: String,
+    /// Typed parameter list.
+    pub params: Vec<Param>,
     /// System body statements.
     pub body: Vec<SystemStmt>,
     /// Source location for diagnostics.
@@ -279,10 +267,8 @@ pub struct Import {
 pub struct Program {
     /// Top-level imports in source order.
     pub imports: Vec<Import>,
-    /// Top-level reusable constraint functions.
-    pub constraint_fns: Vec<ConstraintFn>,
     /// Top-level named systems.
     pub systems: Vec<System>,
-    /// Legacy top-level statements (when no explicit `system` is used).
+    /// Top-level statements (compiled only when no explicit `system` is used).
     pub statements: Vec<Stmt>,
 }

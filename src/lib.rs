@@ -30,6 +30,15 @@ SOFTWARE.
 //! - Lowering/type-checking to scalar `constraint_solver::Exp` equations.
 //! - Solve-time adapters for `rs_math3d` vector types.
 //! - Source-mapped compile/solve diagnostics.
+//!
+//! Preferred system-call semantics:
+//! - `system` parameters use `in`, `out`, `inout` direction modes.
+//! - Calls use direct syntax `name(args...);`.
+//! - Parameters alias caller arguments; repeated calls on the same variables accumulate constraints.
+//! - Local declarations are isolated per invocation.
+//! - Recursive calls are rejected.
+//! - `out` parameters are readable in results but not externally seed-writable.
+//! - Legacy keywords (`constraint_fn`, `use`, `export`, `local`) are rejected.
 
 mod ast;
 mod compiler;
@@ -39,8 +48,8 @@ mod parser;
 mod project;
 
 pub use ast::{
-    BinOp, ConstraintFn, Decl, Expr, ExprKind, Field, Import, Param, Program, SourceSpan, Stmt,
-    StmtKind, System, SystemStmt, SystemStmtKind, TypeName, UseStmt, Visibility,
+    BinOp, CallStmt, Decl, Expr, ExprKind, Field, Import, Param, ParamMode, Program, SourceSpan,
+    Stmt, StmtKind, System, SystemStmt, SystemStmtKind, TypeName,
 };
 pub use diagnostics::CompileError;
 pub use model::{
@@ -54,7 +63,8 @@ use parser::parse_program;
 /// Parses and compiles DSL source into a ready-to-solve [`Model`].
 ///
 /// If the source contains a single `system`, that system is compiled.
-/// If it contains no `system`, legacy top-level statements are compiled.
+/// If it contains no `system`, top-level statements are compiled.
+/// If it contains multiple systems, use [`compile_dsl_system`] to select one.
 ///
 /// # Errors
 ///

@@ -25,8 +25,8 @@ SOFTWARE.
 //! Statement and top-level item parsers.
 
 use crate::ast::{
-    ConstraintFn, Decl, Expr, Import, Param, SourceSpan, Span, Stmt, StmtKind, System, SystemStmt,
-    SystemStmtKind, UseStmt, Visibility,
+    CallStmt, Decl, Expr, Import, Param, ParamMode, SourceSpan, Span, Stmt, StmtKind, System,
+    SystemStmt, SystemStmtKind,
 };
 use nom::Parser;
 use nom::{
@@ -45,19 +45,17 @@ use super::utils::{identifier, string_literal, type_name, ws, ws_char};
 /// One top-level AST item.
 pub(super) enum TopItem {
     Import(Import),
-    ConstraintFn(ConstraintFn),
     System(System),
-    LegacyStmt(Stmt),
+    Stmt(Stmt),
 }
 
 /// Parses one top-level item.
 pub(super) fn top_item(input: Span<'_>) -> PResult<'_, TopItem> {
-    // Try definitions first to avoid treating their bodies as legacy statements.
+    // Try definitions first to avoid treating their bodies as statements.
     alt((
         map(import_stmt, TopItem::Import),
-        map(constraint_fn_def, TopItem::ConstraintFn),
         map(system_def, TopItem::System),
-        map(statement, TopItem::LegacyStmt),
+        map(statement, TopItem::Stmt),
     ))
     .parse(input)
 }
@@ -72,46 +70,17 @@ fn import_stmt(input: Span<'_>) -> PResult<'_, Import> {
     Ok((input, Import { path, span }))
 }
 
-/// Parses a top-level `constraint_fn` definition.
-fn constraint_fn_def(input: Span<'_>) -> PResult<'_, ConstraintFn> {
-    let start = input;
-    let (input, _) = ws(context("'constraint_fn'", tag("constraint_fn"))).parse(input)?;
-    let (input, name) = context("function name", ws(identifier)).parse(input)?;
-    let (input, params) = delimited(
-        ws_char('('),
-        separated_list0(ws_char(','), param),
-        context("')'", ws_char(')')),
-    )
-    .parse(input)?;
-    let (input, body) =
-        delimited(ws_char('{'), many0(statement), context("'}'", ws_char('}'))).parse(input)?;
-    let span = SourceSpan::from_bounds(start, input);
-    Ok((
-        input,
-        ConstraintFn {
-            name,
-            params,
-            body,
-            span,
-        },
-    ))
-}
-
-/// Parses one function parameter (`name: type`).
-fn param(input: Span<'_>) -> PResult<'_, Param> {
-    let start = input;
-    let (input, name) = context("parameter name", ws(identifier)).parse(input)?;
-    let (input, _) = context("':'", ws_char(':')).parse(input)?;
-    let (input, ty) = context("parameter type", ws(type_name)).parse(input)?;
-    let span = SourceSpan::from_bounds(start, input);
-    Ok((input, Param { name, ty, span }))
-}
-
 /// Parses a top-level `system` definition.
 fn system_def(input: Span<'_>) -> PResult<'_, System> {
     let start = input;
     let (input, _) = ws(context("'system'", tag("system"))).parse(input)?;
     let (input, name) = context("system name", ws(identifier)).parse(input)?;
+    let (input, params) = opt(delimited(
+        ws_char('('),
+        separated_list0(ws_char(','), system_param),
+        context("')'", ws_char(')')),
+    ))
+    .parse(input)?;
     let (input, body) = delimited(
         ws_char('{'),
         many0(system_statement),
@@ -119,20 +88,56 @@ fn system_def(input: Span<'_>) -> PResult<'_, System> {
     )
     .parse(input)?;
     let span = SourceSpan::from_bounds(start, input);
-    Ok((input, System { name, body, span }))
+    Ok((
+        input,
+        System {
+            name,
+            params: params.unwrap_or_default(),
+            body,
+            span,
+        },
+    ))
 }
 
-/// Parses one legacy statement and trailing semicolon.
+/// Parses one system parameter (`in|out|inout <type> <name>`).
+fn system_param(input: Span<'_>) -> PResult<'_, Param> {
+    let start = input;
+    let (input, mode) = context("parameter mode", ws(param_mode)).parse(input)?;
+    let (input, ty) = context("parameter type", ws(type_name)).parse(input)?;
+    let (input, name) = context("parameter name", ws(identifier)).parse(input)?;
+    let span = SourceSpan::from_bounds(start, input);
+    Ok((
+        input,
+        Param {
+            mode,
+            name,
+            ty,
+            span,
+        },
+    ))
+}
+
+/// Parses one parameter mode keyword.
+fn param_mode(input: Span<'_>) -> PResult<'_, ParamMode> {
+    alt((
+        map(tag("inout"), |_| ParamMode::InOut),
+        map(tag("in"), |_| ParamMode::In),
+        map(tag("out"), |_| ParamMode::Out),
+    ))
+    .parse(input)
+}
+
+/// Parses one statement and trailing semicolon.
 pub(super) fn statement(input: Span<'_>) -> PResult<'_, Stmt> {
     let start = input;
-    // A statement can be declaration, constraint, or `use`.
+    // A statement can be declaration, constraint, or callable invocation.
     let (input, kind) = alt((
         map(decl_stmt, StmtKind::Decl),
         map(constraint_stmt, |(lhs, rhs)| StmtKind::ConstraintEq {
             lhs,
             rhs,
         }),
-        map(use_stmt, StmtKind::Use),
+        map(call_stmt, StmtKind::Call),
     ))
     .parse(input)?;
     let (input, _) = context("';'", ws_char(';')).parse(input)?;
@@ -144,24 +149,12 @@ pub(super) fn statement(input: Span<'_>) -> PResult<'_, Stmt> {
 pub(super) fn system_statement(input: Span<'_>) -> PResult<'_, SystemStmt> {
     let start = input;
     let (input, kind) = alt((
-        map(export_decl_stmt, |decl| SystemStmtKind::Decl {
-            visibility: Visibility::Export,
-            decl,
-        }),
-        map(local_decl_stmt, |decl| SystemStmtKind::Decl {
-            visibility: Visibility::Local,
-            decl,
-        }),
-        // Bare declarations inside a system default to local visibility.
-        map(decl_stmt, |decl| SystemStmtKind::Decl {
-            visibility: Visibility::Local,
-            decl,
-        }),
+        map(decl_stmt, SystemStmtKind::Decl),
         map(constraint_stmt, |(lhs, rhs)| SystemStmtKind::ConstraintEq {
             lhs,
             rhs,
         }),
-        map(use_stmt, SystemStmtKind::Use),
+        map(call_stmt, SystemStmtKind::Call),
     ))
     .parse(input)?;
     let (input, _) = context("';'", ws_char(';')).parse(input)?;
@@ -188,18 +181,6 @@ pub(super) fn decl_stmt(input: Span<'_>) -> PResult<'_, Decl> {
     ))
 }
 
-/// Parses `export <decl>`.
-fn export_decl_stmt(input: Span<'_>) -> PResult<'_, Decl> {
-    let (input, _) = ws(context("'export'", tag("export"))).parse(input)?;
-    decl_stmt(input)
-}
-
-/// Parses `local <decl>`.
-fn local_decl_stmt(input: Span<'_>) -> PResult<'_, Decl> {
-    let (input, _) = ws(context("'local'", tag("local"))).parse(input)?;
-    decl_stmt(input)
-}
-
 /// Parses a constraint statement body (`constraint lhs == rhs`).
 fn constraint_stmt(input: Span<'_>) -> PResult<'_, (Expr, Expr)> {
     // Grammar: `constraint <expr> == <expr>`
@@ -210,10 +191,9 @@ fn constraint_stmt(input: Span<'_>) -> PResult<'_, (Expr, Expr)> {
     Ok((input, (lhs, rhs)))
 }
 
-/// Parses `use <name>(args...)`.
-pub(super) fn use_stmt(input: Span<'_>) -> PResult<'_, UseStmt> {
+/// Parses direct call syntax (`name(args...)`).
+fn call_stmt(input: Span<'_>) -> PResult<'_, CallStmt> {
     let start = input;
-    let (input, _) = ws(context("'use'", tag("use"))).parse(input)?;
     let (input, name) = context("function name", ws(identifier)).parse(input)?;
     let (input, args) = delimited(
         ws_char('('),
@@ -222,5 +202,5 @@ pub(super) fn use_stmt(input: Span<'_>) -> PResult<'_, UseStmt> {
     )
     .parse(input)?;
     let span = SourceSpan::from_bounds(start, input);
-    Ok((input, UseStmt { name, args, span }))
+    Ok((input, CallStmt { name, args, span }))
 }

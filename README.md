@@ -9,15 +9,16 @@ It parses typed DSL source, lowers it into scalar `constraint_solver::Exp` equat
 ## Features
 
 - Typed DSL symbols: `scalar`, `vec2d`/`vec2f`, `vec3d`/`vec3f`
-- Reusable `constraint_fn` blocks and `use` composition
+- Preferred callable model: parameterized `system` blocks with `in` / `out` / `inout` parameters
+- Direct call statements: `helper(args...);`
 - Multi-file project support via top-level `import "path.dsl";`
-- Named `system` blocks with `export` (public API) and `local` (internal) visibility
 - Built-in math/vector helpers: `dot2`, `dot3`, `length2`, `length3`, `sin`, `cos`, `ln`, `exp`
 - Solve seed helpers for scalar/vec2/vec3 values and unknown selection
 - Rich diagnostics:
   - compile-time `line`, `column`, `snippet`, `pointer`
   - solve-time failure reports with issue tracebacks to source constraints
 - Comment support: `# ...` and `// ...`
+- Strict syntax: legacy `constraint_fn`, `use`, `export`, and `local` keywords are rejected
 
 ## Installation
 
@@ -38,24 +39,37 @@ vec2d p;
 vec3d n = [0, 0, 1];
 ```
 
-Inside a `system`:
-- `export <decl>;` exposes variable(s) through the public API
-- `local <decl>;` keeps variable(s) internal
-- bare declarations default to local
+### Systems (Preferred)
 
-### Constraints and Composition
+```text
+system helper(in scalar a, out vec2d p, inout scalar k) {
+    constraint p == [a, k];
+}
+```
+
+- `in`: caller-provided input
+- `out`: solver-produced output
+- `inout`: caller-provided value that can also be solved/updated
+
+### Statements
 
 ```text
 constraint <expr> == <expr>;
-use some_constraint_fn(args...);
+callable_name(args...);   # preferred call syntax
 ```
+
+Legacy constructs are not supported:
+- `constraint_fn ...`
+- `use name(args...);`
+- `export <decl>;`
+- `local <decl>;`
 
 ### Structure
 
 ```text
 import "constraints/common.dsl";
-constraint_fn name(param: type, ...) { ... }
-system system_name { ... }
+system helper(in scalar a, out scalar b) { ... }
+system main(out scalar x) { helper(1, x); }
 ```
 
 ### Expressions
@@ -75,65 +89,103 @@ system system_name { ... }
 - `length3(vec3) -> scalar`
 - `sin(scalar)`, `cos(scalar)`, `ln(scalar)`, `exp(scalar)`
 
+## System Parameter Semantics
+
+### Call behavior
+
+- Parameters alias caller arguments (no copy).
+- Reusing the same variable(s) across calls accumulates constraints on those unknowns.
+- Recursion is rejected (direct and indirect).
+
+### `in` / `out` / `inout`
+
+- `in` values are externally seedable.
+- `out` values are externally readable in results, but not externally seedable.
+- `inout` values are both seedable and readable.
+
+Example:
+
+```text
+system pin(in scalar target, out scalar x) {
+    constraint x == target;
+}
+
+system main(out scalar v) {
+    pin(5, v);
+}
+```
+
+If you try to seed `v` from the external API (`param_scalar("v", ...)`), compilation/solve API rejects it as non-writable.
+
+Recursive call example (compile error):
+
+```text
+system rec(inout scalar x) {
+    rec(x);  # recursive invocation is rejected
+}
+```
+
+### Out/InOut call-site rule
+
+For `out` and `inout` parameters, call arguments must be variable identifiers.
+
+Valid:
+
+```text
+producer(out_val);
+```
+
+Invalid:
+
+```text
+producer(1 + 2);   # compile error
+```
+
 ## Usage
 
 ### Basic Compile + Solve
 
 ```rust
-use cad_constraint_solver::{compile_dsl, SolveError};
-use rs_math3d::Vec2d;
+use cad_constraint_solver::{compile_dsl_system, SolveError};
 
 let src = r#"
-system s {
-    export vec2d p;
-    constraint p == [3.0, 4.0];
+system main(out scalar x) {
+    constraint x == 3;
 }
 "#;
 
-let model = compile_dsl(src)?;
-
-let seed = model
-    .bootstrap_seed()
-    .unknown_vec2d("p", Vec2d::new(0.0, 0.0));
-
-let result = model.solve(seed)?;
-let p = result.vec2d("p")?;
-assert!((p.x - 3.0).abs() < 1e-8);
-assert!((p.y - 4.0).abs() < 1e-8);
+let model = compile_dsl_system(src, "main")?;
+let result = model.solve(model.bootstrap_seed())?;
+assert!((result.scalar("x")? - 3.0).abs() < 1e-8);
 # Ok::<(), SolveError>(())
 ```
 
-### Compose Reusable Constraints
+### Compose Systems
 
 ```rust
-use cad_constraint_solver::compile_dsl;
+use cad_constraint_solver::compile_dsl_system;
 use rs_math3d::Vec2d;
 
 let src = r#"
-constraint_fn tangent_to_line(center: vec2d, r: scalar, n: vec2d, d: scalar, side: scalar) {
+system tangent_to_line(in vec2d center, in scalar r, in vec2d n, in scalar d, in scalar side) {
     constraint dot2(n, center) + d == side * r;
 }
 
-constraint_fn equal_radius_tangent(c1: vec2d, c2: vec2d, r: scalar) {
+system circles(inout vec2d c1, inout vec2d c2, inout scalar r) {
+    scalar n_y = 1;
+    vec2d n = [0, n_y];
+
+    tangent_to_line(c1, r, n, 0, 1);
+    tangent_to_line(c1, r, n, -10, -1);
+    tangent_to_line(c2, r, n, 0, 1);
+    tangent_to_line(c2, r, n, -10, -1);
+
     constraint dot2(c2 - c1, c2 - c1) == (2 * r) * (2 * r);
-}
-
-system circles {
-    export vec2d c1;
-    export vec2d c2;
-    export scalar r;
-    local vec2d n = [0, 1];
-
-    use tangent_to_line(c1, r, n, 0, 1);
-    use tangent_to_line(c1, r, n, -10, -1);
-    use tangent_to_line(c2, r, n, 0, 1);
-    use tangent_to_line(c2, r, n, -10, -1);
-    use equal_radius_tangent(c1, c2, r);
     constraint c1.x == 0;
 }
 "#;
 
-let model = compile_dsl(src)?;
+let model = compile_dsl_system(src, "circles")?;
 let seed = model
     .bootstrap_seed()
     .unknown_vec2d("c1", Vec2d::new(0.0, 4.0))
@@ -141,47 +193,39 @@ let seed = model
     .unknown_scalar("r", 4.5);
 
 let result = model.solve_with_line_search(seed)?;
-let r = result.scalar("r")?;
-assert!((r - 5.0).abs() < 1e-6);
+assert!((result.scalar("r")? - 5.0).abs() < 1e-6);
 # Ok::<(), cad_constraint_solver::SolveError>(())
 ```
 
 ### Multi-File Project Compile
 
 ```rust
-use cad_constraint_solver::{compile_dsl_project, DslSource};
-use rs_math3d::Vec2d;
+use cad_constraint_solver::{compile_dsl_project_system, DslSource};
 
 let sources = vec![
     DslSource::new(
-        "constraints/2d.dsl",
+        "constraints/pin.dsl",
         r#"
-        constraint_fn pin(p: vec2d) {
-            constraint p == [3, 4];
+        system pin(in scalar target, out scalar x) {
+            constraint x == target;
         }
         "#,
     ),
     DslSource::new(
         "systems/main.dsl",
         r#"
-        import "../constraints/2d.dsl";
-        system s {
-            export vec2d p;
-            use pin(p);
+        import "../constraints/pin.dsl";
+
+        system main(out scalar v) {
+            pin(5, v);
         }
         "#,
     ),
 ];
 
-let model = compile_dsl_project("systems/main.dsl", &sources)?;
-let result = model.solve(
-    model
-        .bootstrap_seed()
-        .unknown_vec2d("p", Vec2d::new(0.0, 0.0)),
-)?;
-let p = result.vec2d("p")?;
-assert!((p.x - 3.0).abs() < 1e-8);
-assert!((p.y - 4.0).abs() < 1e-8);
+let model = compile_dsl_project_system("systems/main.dsl", "main", &sources)?;
+let result = model.solve(model.bootstrap_seed())?;
+assert!((result.scalar("v")? - 5.0).abs() < 1e-8);
 # Ok::<(), cad_constraint_solver::SolveError>(())
 ```
 
@@ -214,12 +258,7 @@ assert!((p.y - 4.0).abs() < 1e-8);
 - `p: vec2d` -> `p.x`, `p.y`
 - `n: vec3d` -> `n.x`, `n.y`, `n.z`
 
-`SolveSeed` handles this flattening for you.
-
-Visibility rules:
-- only `export` variables are writable from the external API
-- `local` variables remain internal
-- attempting to set internal variables through the public API yields `SolveError::UnknownVariable`
+`SolveSeed` handles flattening for you.
 
 ## Diagnostics and Issue Locations
 
@@ -233,85 +272,28 @@ Parser/lowering errors include exact source location info:
 - `snippet` (source line text)
 - `pointer` (caret marker)
 
-Example handling:
-
-```rust
-use cad_constraint_solver::compile_dsl;
-
-let src = "scalar x;\nconstraint y == 1;";
-let err = compile_dsl(src).unwrap_err();
-
-println!("{}", err.message);
-println!("file={}", err.file);
-println!("line={}, col={}", err.line, err.column);
-println!("{}", err.snippet);
-println!("{}", err.pointer);
-```
-
 ### Solve Failures (`SolveError::Failure`)
 
 When solving fails, you get a structured `SolveFailureReport`:
 - `kind`: `OverconstrainedInconsistency`, `NonConvergence`, or `SingularMatrix`
 - `equation_count`, `unknown_count`, `overconstrained`
 - `residuals`, solver `values`
-- `issues`: top residual equations, each with:
-  - `description` (includes system/use-call context)
-  - `file`, `line`, `column`, `snippet`, `pointer`
-  - `traceback` frames (`use` call chain with file/line/column/snippet/pointer)
-  - `residual`, `magnitude`
-
-Example handling:
-
-```rust
-use cad_constraint_solver::{compile_dsl, SolveError};
-
-let src = "system bad {\nexport scalar x;\nconstraint x == 0;\nconstraint x == 1;\n}";
-let model = compile_dsl(src).unwrap();
-let err = model
-    .solve(model.bootstrap_seed().unknown_scalar("x", 0.0))
-    .unwrap_err();
-
-if let SolveError::Failure(report) = err {
-    println!("failure: {:?} residual={}", report.kind, report.error);
-    for issue in &report.issues {
-        println!(
-            "eq#{}, {}:{}:{}: {}",
-            issue.equation_index, issue.file, issue.line, issue.column, issue.description
-        );
-        println!("{}", issue.snippet);
-        println!("{}", issue.pointer);
-        for frame in &issue.traceback {
-            println!(
-                "  via use {} at {}:{}:{}",
-                frame.function, frame.file, frame.line, frame.column
-            );
-        }
-    }
-}
-```
+- `issues`: top residual equations with source mapping and call traceback
 
 Important location detail:
 - currently, issue locations are anchored to the lowered equality span used during compilation.
-- for `constraint lhs == rhs`, this maps to the RHS expression span, so columns usually point at the start of the RHS expression (not necessarily the `constraint` keyword).
+- for `constraint lhs == rhs`, this maps to the RHS expression span, so columns usually point at the start of the RHS expression.
 
 Example:
 
 ```text
-DSL source:
-1 | system bad {
-2 | export scalar x;
-3 | constraint x == 0;
-4 | constraint x == 1;
-5 | }
-
-Typical issue location for line 3:
-line   = 3
-column = 17
-snippet: "constraint x == 0;"
-pointer: "                ^"
+system inconsistent(out scalar x) {
+    constraint x == 1;
+    constraint x == 2;
+}
 ```
 
-In this example, the caret is under `0` (the RHS start), not under the `constraint` keyword.
+For a top residual on the second equation, the reported location is anchored near `2` (the RHS), not the `constraint` keyword.
 
 ## License
 

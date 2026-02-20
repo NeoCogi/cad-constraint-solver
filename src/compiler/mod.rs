@@ -32,8 +32,8 @@ mod expr;
 
 use crate::CompileError;
 use crate::ast::{
-    BinOp, ConstraintFn, Decl, Expr, ExprKind, Field, Program, SourceSpan, Stmt, StmtKind, System,
-    SystemStmt, SystemStmtKind, TypeName, UseStmt, Visibility,
+    BinOp, CallStmt, Decl, Expr, ExprKind, Field, Param, ParamMode, Program, SourceSpan, Stmt,
+    StmtKind, System, SystemStmt, SystemStmtKind, TypeName,
 };
 use crate::model::{
     EquationOrigin, IssueTraceFrame, Model, SymbolType, collect_var_names, evaluate_exp,
@@ -54,15 +54,33 @@ pub(super) enum ValueExp {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ConstraintFnEntry {
-    function: ConstraintFn,
-    doc: Rc<SourceDocument>,
+pub(super) struct SystemEntry {
+    pub(super) system: System,
+    pub(super) doc: Rc<SourceDocument>,
 }
 
-#[derive(Debug, Clone)]
-struct SystemEntry {
-    system: System,
-    doc: Rc<SourceDocument>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PublicRole {
+    TopLevel,
+    In,
+    Out,
+    InOut,
+}
+
+impl PublicRole {
+    pub(super) fn allows_seed(self) -> bool {
+        matches!(
+            self,
+            PublicRole::TopLevel | PublicRole::In | PublicRole::InOut
+        )
+    }
+
+    pub(super) fn allows_unknown_selection(self) -> bool {
+        matches!(
+            self,
+            PublicRole::TopLevel | PublicRole::Out | PublicRole::InOut
+        )
+    }
 }
 
 impl ValueExp {
@@ -82,33 +100,6 @@ impl ValueExp {
             _ => None,
         }
     }
-}
-
-/// Builds function map across all loaded modules and validates duplicate names.
-fn collect_constraint_fns(
-    modules: &[ModuleUnit],
-) -> Result<HashMap<String, ConstraintFnEntry>, CompileError> {
-    let mut map = HashMap::new();
-    for module in modules {
-        for def in &module.program.constraint_fns {
-            if map.contains_key(&def.name) {
-                return Err(CompileError::from_span_in_source(
-                    format!("Duplicate constraint_fn '{}'", def.name),
-                    &module.doc.path,
-                    &module.doc.source,
-                    &def.span,
-                ));
-            }
-            map.insert(
-                def.name.clone(),
-                ConstraintFnEntry {
-                    function: def.clone(),
-                    doc: module.doc.clone(),
-                },
-            );
-        }
-    }
-    Ok(map)
 }
 
 /// Collects named systems across modules and validates duplicate names.
@@ -138,10 +129,9 @@ fn collect_systems(modules: &[ModuleUnit]) -> Result<Vec<SystemEntry>, CompileEr
 /// Selects the system that should be compiled.
 fn pick_system(
     modules: &[ModuleUnit],
+    systems: &[SystemEntry],
     selected_system: Option<&str>,
 ) -> Result<Option<SystemEntry>, CompileError> {
-    let systems = collect_systems(modules)?;
-
     if systems.is_empty() {
         if let Some(name) = selected_system {
             return Err(CompileError::message_only(format!(
@@ -166,7 +156,8 @@ fn pick_system(
 
     if let Some(requested) = selected_system {
         let system = systems
-            .into_iter()
+            .iter()
+            .cloned()
             .find(|entry| entry.system.name == requested)
             .ok_or_else(|| {
                 CompileError::message_only(format!("Requested system '{requested}' was not found"))
@@ -184,7 +175,7 @@ fn pick_system(
         ));
     }
 
-    Ok(systems.into_iter().next())
+    Ok(systems.first().cloned())
 }
 
 /// Lowers loaded modules into a solve-ready model.
@@ -192,7 +183,12 @@ pub(crate) fn lower_modules(
     modules: &[ModuleUnit],
     selected_system: Option<&str>,
 ) -> Result<Model, CompileError> {
-    let functions = collect_constraint_fns(modules)?;
+    let systems = collect_systems(modules)?;
+    let system_map: HashMap<String, SystemEntry> = systems
+        .iter()
+        .cloned()
+        .map(|entry| (entry.system.name.clone(), entry))
+        .collect();
     let initial_doc = modules
         .first()
         .map(|module| module.doc.clone())
@@ -202,12 +198,13 @@ pub(crate) fn lower_modules(
                 source: String::new(),
             })
         });
-    let mut ctx = LowerContext::new(initial_doc, functions);
+    let mut ctx = LowerContext::new(initial_doc, system_map);
     ctx.push_scope(HashMap::new());
 
-    if let Some(system) = pick_system(modules, selected_system)? {
+    if let Some(system) = pick_system(modules, &systems, selected_system)? {
         ctx.current_system_name = Some(system.system.name.clone());
         ctx.push_doc(system.doc.clone());
+        ctx.lower_system_params(&system.system.params)?;
         // Process system statements in source order.
         for stmt in &system.system.body {
             ctx.lower_system_stmt(stmt)?;
@@ -215,22 +212,22 @@ pub(crate) fn lower_modules(
         ctx.pop_doc();
         ctx.current_system_name = None;
     } else {
-        let has_legacy = modules
+        let has_top_level = modules
             .iter()
             .any(|module| !module.program.statements.is_empty());
-        if !has_legacy {
+        if !has_top_level {
             return Err(CompileError::message_only(
                 "No system or top-level statements to compile",
             ));
         }
-        // Legacy mode: top-level declarations are considered public.
+        // Top-level mode: declarations are considered public.
         for module in modules {
             if module.program.statements.is_empty() {
                 continue;
             }
             ctx.push_doc(module.doc.clone());
             for stmt in &module.program.statements {
-                ctx.lower_legacy_stmt(stmt)?;
+                ctx.lower_top_level_stmt(stmt)?;
             }
             ctx.pop_doc();
         }

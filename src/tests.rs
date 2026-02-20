@@ -80,7 +80,7 @@ fn reports_line_and_column_for_compile_errors() {
 
 #[test]
 fn reports_parse_error_for_bad_parameter_syntax() {
-    let src = "constraint_fn bad(a scalar) { constraint a == 1; }";
+    let src = "system bad(in scalar a out scalar b) { constraint b == a; }";
     let err = parse_dsl(src).expect_err("parse should fail");
     assert_eq!(err.line, 1);
     assert!(err.column > 0);
@@ -90,7 +90,7 @@ fn reports_parse_error_for_bad_parameter_syntax() {
 
 #[test]
 fn reports_parse_error_for_missing_semicolon() {
-    let src = "system s { export scalar r constraint r == 1; }";
+    let src = "system s(out scalar r) { scalar y constraint r == y; }";
     let err = parse_dsl(src).expect_err("parse should fail");
     assert_eq!(err.line, 1);
     assert!(err.column > 0);
@@ -99,8 +99,8 @@ fn reports_parse_error_for_missing_semicolon() {
 }
 
 #[test]
-fn reports_parse_error_for_unclosed_use_call() {
-    let src = "system s { use foo(1, 2; }";
+fn reports_parse_error_for_unclosed_call() {
+    let src = "system s(out scalar x) { foo(1, 2; }";
     let err = parse_dsl(src).expect_err("parse should fail");
     assert_eq!(err.line, 1);
     assert!(err.column > 0);
@@ -111,95 +111,121 @@ fn reports_parse_error_for_unclosed_use_call() {
 #[test]
 fn reports_parse_errors_for_exhaustive_invalid_forms() {
     let cases = vec![
-        ("missing system name", "system { export scalar x; }", 1usize),
         (
-            "missing constraint_fn name",
-            "constraint_fn (x: scalar) { constraint x == 1; }",
+            "missing system name",
+            "system (out scalar x) { constraint x == 1; }",
+            1usize,
+        ),
+        (
+            "missing comma in parameter list",
+            "system s(in scalar a out scalar b) { constraint b == a; }",
             1,
         ),
         (
-            "missing colon in parameter",
-            "constraint_fn bad(x scalar) { constraint x == 1; }",
+            "unsupported constraint_fn keyword",
+            "constraint_fn f(x: scalar) { constraint x == 1; }",
+            1,
+        ),
+        (
+            "unsupported use keyword",
+            "system s(out scalar x) { use foo(x); }",
+            1,
+        ),
+        (
+            "unsupported export declaration keyword",
+            "system s(out scalar x) { export scalar y; }",
+            1,
+        ),
+        (
+            "unsupported local declaration keyword",
+            "system s(out scalar x) { local scalar y; }",
             1,
         ),
         (
             "missing closing paren in parameter list",
-            "constraint_fn bad(x: scalar { constraint x == 1; }",
+            "system s(in scalar a, out scalar b { constraint b == a; }",
             1,
         ),
         (
             "missing semicolon after declaration",
-            "system s { export scalar x constraint x == 1; }",
-            1,
-        ),
-        (
-            "missing semicolon in constraint_fn body",
-            "constraint_fn bad(x: scalar) { constraint x == 1 }",
+            "system s(out scalar x) { scalar y constraint x == y; }",
             1,
         ),
         (
             "missing lhs expression",
-            "system s { export scalar x; constraint == 1; }",
+            "system s(out scalar x) { constraint == 1; }",
             1,
         ),
         (
             "missing rhs expression",
-            "system s { export scalar x; constraint x == ; }",
+            "system s(out scalar x) { constraint x == ; }",
             1,
         ),
         (
             "malformed binary rhs",
-            "system s { export scalar x; constraint x == 1 + ; }",
+            "system s(out scalar x) { constraint x == 1 + ; }",
             1,
         ),
-        ("unclosed use call", "system s { use foo(1, 2; }", 1),
-        ("trailing comma in use args", "system s { use foo(1,); }", 1),
-        ("missing comma in use args", "system s { use foo(1 2); }", 1),
+        ("unclosed call", "system s(out scalar x) { foo(1, 2; }", 1),
+        (
+            "trailing comma in call args",
+            "system s(out scalar x) { foo(1,); }",
+            1,
+        ),
+        (
+            "missing comma in call args",
+            "system s(out scalar x) { foo(1 2); }",
+            1,
+        ),
         (
             "missing closing bracket in vector literal",
-            "system s { vec2d p; constraint p == [1, 2; }",
+            "system s(out scalar x) { vec2d p; constraint p == [1, 2; }",
             1,
         ),
         (
             "invalid swizzle component",
-            "system s { vec2d p; constraint p.w == 1; }",
+            "system s(out scalar x) { vec2d p; constraint p.w == 1; }",
             1,
         ),
         (
             "invalid identifier in declaration",
-            "system s { export scalar 1x; }",
+            "system s(out scalar x) { scalar 1x; }",
             1,
         ),
-        ("unknown type token", "system s { vector x; }", 1),
+        (
+            "unknown type token",
+            "system s(out scalar x) { vector y; }",
+            1,
+        ),
         (
             "unmatched parenthesis in expression",
-            "system s { export scalar x; constraint (x == 1; }",
+            "system s(out scalar x) { constraint (x == 1; }",
             1,
         ),
         (
             "missing opening system brace",
-            "system s export scalar x; }",
+            "system s(out scalar x) constraint x == 1; }",
             1,
         ),
         (
             "missing closing system brace",
-            "system s { export scalar x;",
+            "system s(out scalar x) { scalar y;",
             1,
         ),
         (
             "trailing garbage after valid system",
-            "system s { export scalar x; } trailing",
+            "system s(out scalar x) { constraint x == 1; } trailing",
             1,
         ),
         ("random garbage input", "@@@", 1),
         (
             "multiline missing rhs expression",
-            "system s {\nexport scalar x;\nconstraint x == ;\n}",
+            "system s(out scalar x) {\nconstraint x == ;\n}",
             1,
         ),
         (
             "multiline missing closing vector bracket",
-            "system s {\nvec2d p;\nconstraint p == [1, 2;\n}",
+            "system s(out scalar x) {\nvec2d p;\nconstraint p == [1, 2;\n}",
             1,
         ),
     ];
@@ -227,7 +253,7 @@ fn parses_top_level_imports() {
 fn rejects_imports_in_single_source_compile_api() {
     let src = r#"
             import "common.dsl";
-            system s { export scalar x; constraint x == 1; }
+            system s(out scalar x) { constraint x == 1; }
         "#;
     let err = compile_dsl(src).expect_err("compile should fail");
     assert!(err.message.contains("Imports require project compilation"));
@@ -242,7 +268,7 @@ fn compiles_and_solves_multi_file_project() {
         DslSource::new(
             "constraints/2d.dsl",
             r#"
-                constraint_fn pin(p: vec2d) {
+                system pin(out vec2d p) {
                     constraint p == [3, 4];
                 }
                 "#,
@@ -251,15 +277,14 @@ fn compiles_and_solves_multi_file_project() {
             "systems/main.dsl",
             r#"
                 import "../constraints/2d.dsl";
-                system s {
-                    export vec2d p;
-                    use pin(p);
+                system s(inout vec2d p) {
+                    pin(p);
                 }
                 "#,
         ),
     ];
 
-    let model = compile_dsl_project("systems/main.dsl", &sources).expect("compile");
+    let model = compile_dsl_project_system("systems/main.dsl", "s", &sources).expect("compile");
     let result = model
         .solve(
             model
@@ -278,8 +303,7 @@ fn reports_missing_import_with_callsite_location() {
         "systems/main.dsl",
         r#"
             import "../constraints/missing.dsl";
-            system s {
-                export scalar x;
+            system s(out scalar x) {
                 constraint x == 1;
             }
             "#,
@@ -310,12 +334,12 @@ fn reports_import_cycle_with_source_location() {
 }
 
 #[test]
-fn reports_duplicate_constraint_fn_across_files() {
+fn reports_duplicate_system_across_files() {
     let sources = vec![
         DslSource::new(
             "constraints/a.dsl",
             r#"
-                constraint_fn c(v: scalar) {
+                system c(inout scalar v) {
                     constraint v == 0;
                 }
                 "#,
@@ -323,7 +347,7 @@ fn reports_duplicate_constraint_fn_across_files() {
         DslSource::new(
             "constraints/b.dsl",
             r#"
-                constraint_fn c(v: scalar) {
+                system c(inout scalar v) {
                     constraint v == 1;
                 }
                 "#,
@@ -333,28 +357,27 @@ fn reports_duplicate_constraint_fn_across_files() {
             r#"
                 import "../constraints/a.dsl";
                 import "../constraints/b.dsl";
-                system s {
-                    export scalar x;
-                    use c(x);
+                system main(out scalar x) {
+                    c(x);
                 }
                 "#,
         ),
     ];
 
     let err = compile_dsl_project("systems/main.dsl", &sources).expect_err("compile should fail");
-    assert!(err.message.contains("Duplicate constraint_fn 'c'"));
+    assert!(err.message.contains("Duplicate system 'c'"));
     assert_eq!(err.file, "constraints/b.dsl");
     assert_eq!(err.line, 2);
     assert_eq!(err.column, 17);
 }
 
 #[test]
-fn solve_trace_reports_origin_file_and_use_callsite() {
+fn solve_trace_reports_origin_file_and_callsite() {
     let sources = vec![
         DslSource::new(
             "constraints/common.dsl",
             r#"
-                constraint_fn contradictory(v: scalar) {
+                system contradictory(inout scalar v) {
                     constraint v == 0;
                     constraint v == 1;
                 }
@@ -364,15 +387,15 @@ fn solve_trace_reports_origin_file_and_use_callsite() {
             "systems/main.dsl",
             r#"
                 import "../constraints/common.dsl";
-                system traced {
-                    export scalar x;
-                    use contradictory(x);
+                system traced(inout scalar x) {
+                    contradictory(x);
                 }
                 "#,
         ),
     ];
 
-    let model = compile_dsl_project("systems/main.dsl", &sources).expect("compile");
+    let model =
+        compile_dsl_project_system("systems/main.dsl", "traced", &sources).expect("compile");
     let err = model
         .solve(model.bootstrap_seed().unknown_scalar("x", 0.5))
         .expect_err("solve should fail");
@@ -394,7 +417,7 @@ fn solve_trace_reports_origin_file_and_use_callsite() {
             .any(|issue| issue.traceback.iter().any(|frame| {
                 frame.function == "contradictory"
                     && frame.file == "systems/main.dsl"
-                    && frame.line == 5
+                    && frame.line >= 4
             }))
     );
 }
@@ -403,13 +426,14 @@ fn solve_trace_reports_origin_file_and_use_callsite() {
 fn supports_hash_comments() {
     let src = r#"
             # top-level comment
-            system s {
-                export scalar x; # inline comment
+            system s(out scalar x) {
+                scalar temp; # inline comment
+                constraint temp == x; # another comment
                 constraint x == 2; # another comment
             }
         "#;
 
-    let model = compile_dsl(src).expect("compile");
+    let model = compile_dsl_system(src, "s").expect("compile");
     let result = model.solve(model.bootstrap_seed()).expect("solve");
     let x = result.scalar("x").expect("x");
     assert!((x - 2.0).abs() < 1e-8);
@@ -449,32 +473,29 @@ fn solves_simple_vec3_constraints() {
 }
 
 #[test]
-fn solves_composed_system_with_local_and_exported_vars() {
+fn solves_composed_system_with_parameters_and_locals() {
     let src = r#"
-            constraint_fn tangent_to_line(center: vec2d, r: scalar, n: vec2d, d: scalar, side: scalar) {
+            system tangent_to_line(in vec2d center, in scalar r, in vec2d n, in scalar d, in scalar side) {
                 constraint dot2(n, center) + d == side * r;
             }
 
-            constraint_fn equal_radius_tangent(c1: vec2d, c2: vec2d, r: scalar) {
+            system equal_radius_tangent(in vec2d c1, in vec2d c2, in scalar r) {
                 constraint dot2(c2 - c1, c2 - c1) == (2 * r) * (2 * r);
             }
 
-            system circles {
-                export vec2d c1;
-                export vec2d c2;
-                export scalar r;
-                local vec2d n = [0, 1];
+            system circles(inout vec2d c1, inout vec2d c2, inout scalar r) {
+                vec2d n = [0, 1];
 
-                use tangent_to_line(c1, r, n, 0, 1);
-                use tangent_to_line(c1, r, n, -10, -1);
-                use tangent_to_line(c2, r, n, 0, 1);
-                use tangent_to_line(c2, r, n, -10, -1);
-                use equal_radius_tangent(c1, c2, r);
+                tangent_to_line(c1, r, n, 0, 1);
+                tangent_to_line(c1, r, n, -10, -1);
+                tangent_to_line(c2, r, n, 0, 1);
+                tangent_to_line(c2, r, n, -10, -1);
+                equal_radius_tangent(c1, c2, r);
                 constraint c1.x == 0;
             }
         "#;
 
-    let model = compile_dsl(src).expect("compile");
+    let model = compile_dsl_system(src, "circles").expect("compile");
     assert_eq!(model.symbol_type("c1"), Some(SymbolType::Vec2d));
     assert_eq!(model.symbol_type("c2"), Some(SymbolType::Vec2d));
     assert_eq!(model.symbol_type("r"), Some(SymbolType::Scalar));
@@ -502,9 +523,8 @@ fn solves_composed_system_with_local_and_exported_vars() {
 #[test]
 fn rejects_setting_local_variable_from_public_api() {
     let src = r#"
-            system s {
-                export scalar x;
-                local scalar hidden;
+            system s(out scalar x) {
+                scalar hidden;
                 constraint hidden == x + 1;
                 constraint x == 2;
             }
@@ -518,11 +538,11 @@ fn rejects_setting_local_variable_from_public_api() {
 
 #[test]
 fn reports_overconstrained_inconsistency_with_trace() {
-    let src = "system bad {\nexport scalar x;\nconstraint x == 0;\nconstraint x == 1;\n}";
+    let src = "system bad(out scalar x) {\nconstraint x == 0;\nconstraint x == 1;\n}";
 
     let model = compile_dsl(src).expect("compile");
     let err = model
-        .solve(model.bootstrap_seed().unknown_scalar("x", 0.5))
+        .solve(model.bootstrap_seed())
         .expect_err("solve should fail");
 
     let report = err
@@ -534,8 +554,8 @@ fn reports_overconstrained_inconsistency_with_trace() {
     let first = report
         .issues
         .iter()
-        .find(|issue| issue.line == 3)
-        .expect("missing issue for line 3");
+        .find(|issue| issue.line == 2)
+        .expect("missing issue for line 2");
     assert_eq!(first.column, 17);
     assert_eq!(first.snippet, "constraint x == 0;");
     assert_eq!(first_caret_column(&first.pointer), Some(first.column));
@@ -543,8 +563,8 @@ fn reports_overconstrained_inconsistency_with_trace() {
     let second = report
         .issues
         .iter()
-        .find(|issue| issue.line == 4)
-        .expect("missing issue for line 4");
+        .find(|issue| issue.line == 3)
+        .expect("missing issue for line 3");
     assert_eq!(second.column, 17);
     assert_eq!(second.snippet, "constraint x == 1;");
     assert_eq!(first_caret_column(&second.pointer), Some(second.column));
@@ -552,11 +572,11 @@ fn reports_overconstrained_inconsistency_with_trace() {
 
 #[test]
 fn reports_non_convergence_with_trace() {
-    let src = "system impossible {\nexport scalar x;\nconstraint exp(x) == -1;\n}";
+    let src = "system impossible(out scalar x) {\nconstraint exp(x) == -1;\n}";
 
     let model = compile_dsl(src).expect("compile");
     let err = model
-        .solve(model.bootstrap_seed().unknown_scalar("x", 0.0))
+        .solve(model.bootstrap_seed())
         .expect_err("solve should fail");
 
     let report = err
@@ -570,8 +590,8 @@ fn reports_non_convergence_with_trace() {
     let issue = report
         .issues
         .iter()
-        .find(|issue| issue.line == 3)
-        .expect("missing issue for line 3");
+        .find(|issue| issue.line == 2)
+        .expect("missing issue for line 2");
     assert_eq!(issue.column, 22);
     assert_eq!(issue.snippet, "constraint exp(x) == -1;");
     assert_eq!(first_caret_column(&issue.pointer), Some(issue.column));
@@ -580,11 +600,11 @@ fn reports_non_convergence_with_trace() {
 
 #[test]
 fn reports_non_convergence_with_line_search_trace() {
-    let src = "system impossible {\nexport scalar x;\nconstraint exp(x) == -1;\n}";
+    let src = "system impossible(out scalar x) {\nconstraint exp(x) == -1;\n}";
 
     let model = compile_dsl(src).expect("compile");
     let err = model
-        .solve_with_line_search(model.bootstrap_seed().unknown_scalar("x", 0.0))
+        .solve_with_line_search(model.bootstrap_seed())
         .expect_err("line-search solve should fail");
 
     let report = err
@@ -598,8 +618,8 @@ fn reports_non_convergence_with_line_search_trace() {
     let issue = report
         .issues
         .iter()
-        .find(|issue| issue.line == 3)
-        .expect("missing issue for line 3");
+        .find(|issue| issue.line == 2)
+        .expect("missing issue for line 2");
     assert_eq!(issue.column, 22);
     assert_eq!(issue.snippet, "constraint exp(x) == -1;");
     assert_eq!(first_caret_column(&issue.pointer), Some(issue.column));
@@ -608,9 +628,8 @@ fn reports_non_convergence_with_line_search_trace() {
 #[test]
 fn failure_report_absent_on_non_failure_errors() {
     let src = r#"
-            system s {
-                export scalar x;
-                local scalar hidden;
+            system s(out scalar x) {
+                scalar hidden;
                 constraint hidden == x + 1;
                 constraint x == 2;
             }
@@ -627,8 +646,7 @@ fn failure_report_absent_on_non_failure_errors() {
 #[test]
 fn classifies_all_failure_kinds() {
     let src = r#"
-            system s {
-                export scalar x;
+            system s(out scalar x) {
                 constraint x == 0;
             }
         "#;
@@ -673,8 +691,7 @@ fn classifies_all_failure_kinds() {
 #[test]
 fn failure_issues_are_sorted_by_residual_magnitude() {
     let src = r#"
-            system bad {
-                export scalar x;
+            system bad(out scalar x) {
                 constraint x == 0;
                 constraint x == 2;
                 constraint x == 10;
@@ -683,7 +700,7 @@ fn failure_issues_are_sorted_by_residual_magnitude() {
 
     let model = compile_dsl(src).expect("compile");
     let err = model
-        .solve(model.bootstrap_seed().unknown_scalar("x", 0.0))
+        .solve(model.bootstrap_seed())
         .expect_err("solve should fail");
     let report = err
         .failure_report()
@@ -695,10 +712,10 @@ fn failure_issues_are_sorted_by_residual_magnitude() {
 }
 
 #[test]
-fn trace_contains_system_and_use_context() {
-    let src = "constraint_fn contradictory(v: scalar) {\nconstraint v == 0;\nconstraint v == 1;\n}\n\nsystem traced {\nexport scalar x;\nuse contradictory(x);\n}";
+fn trace_contains_system_and_call_context() {
+    let src = "system contradictory(inout scalar v) {\nconstraint v == 0;\nconstraint v == 1;\n}\n\nsystem traced(inout scalar x) {\ncontradictory(x);\n}";
 
-    let model = compile_dsl(src).expect("compile");
+    let model = compile_dsl_system(src, "traced").expect("compile");
     let err = model
         .solve(model.bootstrap_seed().unknown_scalar("x", 0.5))
         .expect_err("solve should fail");
@@ -716,7 +733,7 @@ fn trace_contains_system_and_use_context() {
         report
             .issues
             .iter()
-            .any(|issue| issue.description.contains("use contradictory"))
+            .any(|issue| issue.description.contains("call contradictory"))
     );
     assert!(report.issues.iter().any(|issue| {
         (issue.line == 2 || issue.line == 3)
@@ -724,4 +741,87 @@ fn trace_contains_system_and_use_context() {
             && issue.snippet.starts_with("constraint v ==")
             && first_caret_column(&issue.pointer) == Some(issue.column)
     }));
+}
+
+#[test]
+fn parses_system_parameters_with_directions() {
+    let src = r#"
+        system helper(in scalar a, out vec2d p, inout scalar k) {
+            constraint a == k;
+            constraint p == [a, k];
+        }
+    "#;
+    let program = parse_dsl(src).expect("parse");
+    let system = program.systems.first().expect("system");
+    assert_eq!(system.params.len(), 3);
+    assert_eq!(system.params[0].mode, ParamMode::In);
+    assert_eq!(system.params[1].mode, ParamMode::Out);
+    assert_eq!(system.params[2].mode, ParamMode::InOut);
+}
+
+#[test]
+fn solves_parameterized_system_call_without_use_keyword() {
+    let src = r#"
+        system pin(in scalar target, out scalar x) {
+            constraint x == target;
+        }
+
+        system main(out scalar v) {
+            pin(5, v);
+        }
+    "#;
+
+    let model = compile_dsl_system(src, "main").expect("compile");
+    let result = model.solve(model.bootstrap_seed()).expect("solve");
+    let v = result.scalar("v").expect("v");
+    assert!((v - 5.0).abs() < 1e-8);
+}
+
+#[test]
+fn rejects_setting_out_parameter_from_public_seed() {
+    let src = r#"
+        system s(out scalar x) {
+            constraint x == 1;
+        }
+    "#;
+    let model = compile_dsl(src).expect("compile");
+    let err = model
+        .solve(model.bootstrap_seed().param_scalar("x", 3.0))
+        .expect_err("solve should fail");
+    assert!(matches!(err, SolveError::UnknownVariable(ref name) if name == "x"));
+}
+
+#[test]
+fn rejects_non_identifier_out_argument_for_system_call() {
+    let src = r#"
+        system producer(out scalar x) {
+            constraint x == 1;
+        }
+
+        system main(out scalar y) {
+            producer(1 + 2);
+            constraint y == 0;
+        }
+    "#;
+    let err = compile_dsl_system(src, "main").expect_err("compile should fail");
+    assert!(err.message.contains("must be a variable identifier"));
+}
+
+#[test]
+fn rejects_recursive_system_calls() {
+    let src = r#"
+        system rec(inout scalar x) {
+            rec(x);
+        }
+
+        system main(out scalar x) {
+            rec(x);
+            constraint x == 1;
+        }
+    "#;
+    let err = compile_dsl_system(src, "main").expect_err("compile should fail");
+    assert!(
+        err.message
+            .contains("Recursive callable invocation is not supported")
+    );
 }
