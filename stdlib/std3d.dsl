@@ -22,7 +22,7 @@
 # Enforces two 3D points to coincide.
 # ----------------------------------------------------------------------------
 system c3_coincident(in vec3d a, in vec3d b) {
-    constraint a == b;
+    a == b;
 }
 
 # ----------------------------------------------------------------------------
@@ -30,7 +30,7 @@ system c3_coincident(in vec3d a, in vec3d b) {
 # Point-point distance: |b-a|^2 = dist^2.
 # ----------------------------------------------------------------------------
 system c3_distance_pp(in vec3d a, in vec3d b, in scalar dist) {
-    constraint dot3(b - a, b - a) == dist * dist;
+    dot3(b - a, b - a) == dist * dist;
 }
 
 # ----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ system c3_distance_pp(in vec3d a, in vec3d b, in scalar dist) {
 # Enforces m as midpoint of segment (a,b).
 # ----------------------------------------------------------------------------
 system c3_midpoint(in vec3d m, in vec3d a, in vec3d b) {
-    constraint 2 * m == a + b;
+    2 * m == a + b;
 }
 
 # ----------------------------------------------------------------------------
@@ -46,7 +46,7 @@ system c3_midpoint(in vec3d m, in vec3d a, in vec3d b) {
 # Enforces |b-a| = |d-c| using squared form.
 # ----------------------------------------------------------------------------
 system c3_equal_length(in vec3d a, in vec3d b, in vec3d c, in vec3d d) {
-    constraint dot3(b - a, b - a) == dot3(d - c, d - c);
+    dot3(b - a, b - a) == dot3(d - c, d - c);
 }
 
 # ----------------------------------------------------------------------------
@@ -54,7 +54,7 @@ system c3_equal_length(in vec3d a, in vec3d b, in vec3d c, in vec3d d) {
 # Enforces a vector to be unit length.
 # ----------------------------------------------------------------------------
 system c3_unit_direction(in vec3d v) {
-    constraint dot3(v, v) == 1;
+    dot3(v, v) == 1;
 }
 
 # ----------------------------------------------------------------------------
@@ -63,7 +63,7 @@ system c3_unit_direction(in vec3d v) {
 # ----------------------------------------------------------------------------
 system c3_parallel_vectors(in vec3d v1, in vec3d v2) {
     scalar k;
-    constraint v1 == k * v2;
+    v1 == k * v2;
 }
 
 # ----------------------------------------------------------------------------
@@ -71,7 +71,7 @@ system c3_parallel_vectors(in vec3d v1, in vec3d v2) {
 # Enforces vectors to be perpendicular.
 # ----------------------------------------------------------------------------
 system c3_perpendicular_vectors(in vec3d v1, in vec3d v2) {
-    constraint dot3(v1, v2) == 0;
+    dot3(v1, v2) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -80,7 +80,7 @@ system c3_perpendicular_vectors(in vec3d v1, in vec3d v2) {
 # ----------------------------------------------------------------------------
 system c3_point_on_line(in vec3d p, in vec3d l0, in vec3d l1) {
     scalar t;
-    constraint p == l0 + t * (l1 - l0);
+    p == l0 + t * (l1 - l0);
 }
 
 # ----------------------------------------------------------------------------
@@ -88,7 +88,7 @@ system c3_point_on_line(in vec3d p, in vec3d l0, in vec3d l1) {
 # Enforces p on plane defined by point p0 and normal n.
 # ----------------------------------------------------------------------------
 system c3_point_on_plane(in vec3d p, in vec3d p0, in vec3d n) {
-    constraint dot3(n, p - p0) == 0;
+    dot3(n, p - p0) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -104,7 +104,7 @@ system c3_parallel_lines(in vec3d a0, in vec3d a1, in vec3d b0, in vec3d b1) {
 # Enforces line (a0,a1) perpendicular to line (b0,b1).
 # ----------------------------------------------------------------------------
 system c3_perpendicular_lines(in vec3d a0, in vec3d a1, in vec3d b0, in vec3d b1) {
-    constraint dot3(a1 - a0, b1 - b0) == 0;
+    dot3(a1 - a0, b1 - b0) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -112,7 +112,7 @@ system c3_perpendicular_lines(in vec3d a0, in vec3d a1, in vec3d b0, in vec3d b1
 # Enforces line (l0,l1) parallel to plane by requiring direction dot normal = 0.
 # ----------------------------------------------------------------------------
 system c3_parallel_line_plane(in vec3d l0, in vec3d l1, in vec3d n) {
-    constraint dot3(l1 - l0, n) == 0;
+    dot3(l1 - l0, n) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -137,7 +137,7 @@ system c3_parallel_planes(in vec3d n1, in vec3d n2) {
 # Enforces two plane normals perpendicular.
 # ----------------------------------------------------------------------------
 system c3_perpendicular_planes(in vec3d n1, in vec3d n2) {
-    constraint dot3(n1, n2) == 0;
+    dot3(n1, n2) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -152,7 +152,7 @@ system c3_angle_ll(
     in vec3d b1,
     in scalar angle_rad
 ) {
-    constraint dot3(a1 - a0, b1 - b0)
+    dot3(a1 - a0, b1 - b0)
         == cos(angle_rad) * length3(a1 - a0) * length3(b1 - b0);
 }
 
@@ -163,7 +163,7 @@ system c3_angle_ll(
 #   dot(d,n) = sin(theta) * |d| * |n|
 # ----------------------------------------------------------------------------
 system c3_angle_line_plane(in vec3d l0, in vec3d l1, in vec3d n, in scalar angle_rad) {
-    constraint dot3(l1 - l0, n) == sin(angle_rad) * length3(l1 - l0) * length3(n);
+    dot3(l1 - l0, n) == sin(angle_rad) * length3(l1 - l0) * length3(n);
 }
 
 # ----------------------------------------------------------------------------
@@ -171,7 +171,7 @@ system c3_angle_line_plane(in vec3d l0, in vec3d l1, in vec3d n, in scalar angle
 # Constrains angle between two plane normals to angle_rad.
 # ----------------------------------------------------------------------------
 system c3_angle_planes(in vec3d n1, in vec3d n2, in scalar angle_rad) {
-    constraint dot3(n1, n2) == cos(angle_rad) * length3(n1) * length3(n2);
+    dot3(n1, n2) == cos(angle_rad) * length3(n1) * length3(n2);
 }
 
 # ----------------------------------------------------------------------------
@@ -179,7 +179,7 @@ system c3_angle_planes(in vec3d n1, in vec3d n2, in scalar angle_rad) {
 # Enforces p on sphere(center,radius).
 # ----------------------------------------------------------------------------
 system c3_point_on_sphere(in vec3d p, in vec3d center, in scalar radius) {
-    constraint dot3(p - center, p - center) == radius * radius;
+    dot3(p - center, p - center) == radius * radius;
 }
 
 # ----------------------------------------------------------------------------
@@ -194,7 +194,7 @@ system c3_tangent_sphere_plane(
     in vec3d n,
     in scalar side
 ) {
-    constraint dot3(n, center - p0) == side * radius * length3(n);
+    dot3(n, center - p0) == side * radius * length3(n);
 }
 
 # ----------------------------------------------------------------------------
@@ -209,7 +209,7 @@ system c3_tangent_sphere_sphere(
     in scalar r2,
     in scalar mode
 ) {
-    constraint dot3(c2 - c1, c2 - c1) == (r1 + mode * r2) * (r1 + mode * r2);
+    dot3(c2 - c1, c2 - c1) == (r1 + mode * r2) * (r1 + mode * r2);
 }
 
 # ----------------------------------------------------------------------------
@@ -217,7 +217,7 @@ system c3_tangent_sphere_sphere(
 # Enforces two sphere centers to coincide.
 # ----------------------------------------------------------------------------
 system c3_concentric_spheres(in vec3d c1, in vec3d c2) {
-    constraint c1 == c2;
+    c1 == c2;
 }
 
 # ----------------------------------------------------------------------------
@@ -225,7 +225,7 @@ system c3_concentric_spheres(in vec3d c1, in vec3d c2) {
 # Enforces equality of two scalar radii.
 # ----------------------------------------------------------------------------
 system c3_equal_radius(in scalar r1, in scalar r2) {
-    constraint r1 == r2;
+    r1 == r2;
 }
 
 # ----------------------------------------------------------------------------
@@ -240,7 +240,7 @@ system c3_distance_point_plane_signed(
     in vec3d n,
     in scalar dist
 ) {
-    constraint dot3(n, p - p0) == dist * length3(n);
+    dot3(n, p - p0) == dist * length3(n);
 }
 
 # ----------------------------------------------------------------------------
@@ -254,8 +254,8 @@ system c3_distance_point_plane_signed(
 system c3_distance_point_line(in vec3d p, in vec3d l0, in vec3d l1, in scalar dist) {
     scalar t;
 
-    constraint dot3(p - (l0 + t * (l1 - l0)), l1 - l0) == 0;
-    constraint dot3(p - (l0 + t * (l1 - l0)), p - (l0 + t * (l1 - l0))) == dist * dist;
+    dot3(p - (l0 + t * (l1 - l0)), l1 - l0) == 0;
+    dot3(p - (l0 + t * (l1 - l0)), p - (l0 + t * (l1 - l0))) == dist * dist;
 }
 
 # ----------------------------------------------------------------------------
@@ -276,9 +276,9 @@ system c3_distance_line_line(
     scalar t1;
     scalar t2;
 
-    constraint dot3((a0 + t1 * (a1 - a0)) - (b0 + t2 * (b1 - b0)), a1 - a0) == 0;
-    constraint dot3((a0 + t1 * (a1 - a0)) - (b0 + t2 * (b1 - b0)), b1 - b0) == 0;
-    constraint dot3(
+    dot3((a0 + t1 * (a1 - a0)) - (b0 + t2 * (b1 - b0)), a1 - a0) == 0;
+    dot3((a0 + t1 * (a1 - a0)) - (b0 + t2 * (b1 - b0)), b1 - b0) == 0;
+    dot3(
         (a0 + t1 * (a1 - a0)) - (b0 + t2 * (b1 - b0)),
         (a0 + t1 * (a1 - a0)) - (b0 + t2 * (b1 - b0))
     ) == dist * dist;
@@ -297,5 +297,5 @@ system c3_distance_plane_plane(
     in scalar dist
 ) {
     c3_parallel_planes(n1, n2);
-    constraint dot3(n1, p2 - p1) == dist * length3(n1);
+    dot3(n1, p2 - p1) == dist * length3(n1);
 }

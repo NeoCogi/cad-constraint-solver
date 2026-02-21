@@ -46,7 +46,7 @@ vec3d n = [0, 0, 1];
 
 ```text
 system helper(in scalar a, out vec2d p, inout scalar k) {
-    constraint p == [a, k];
+    p == [a, k];
 }
 ```
 
@@ -57,7 +57,7 @@ system helper(in scalar a, out vec2d p, inout scalar k) {
 ### Statements
 
 ```text
-constraint <expr> == <expr>;
+<expr> == <expr>;
 callable_name(args...);   # preferred call syntax
 ```
 
@@ -121,7 +121,7 @@ Example:
 
 ```text
 system pin(in scalar target, out scalar x) {
-    constraint x == target;
+    x == target;
 }
 
 system main(out scalar v) {
@@ -164,7 +164,7 @@ use cad_constraint_solver::{compile_dsl_system, SolveError};
 
 let src = r#"
 system main(out scalar x) {
-    constraint x == 3;
+    x == 3;
 }
 "#;
 
@@ -182,7 +182,7 @@ use rs_math3d::Vec2d;
 
 let src = r#"
 system tangent_to_line(in vec2d center, in scalar r, in vec2d n, in scalar d, in scalar side) {
-    constraint dot2(n, center) + d == side * r;
+    dot2(n, center) + d == side * r;
 }
 
 system circles(inout vec2d c1, inout vec2d c2, inout scalar r) {
@@ -194,8 +194,8 @@ system circles(inout vec2d c1, inout vec2d c2, inout scalar r) {
     tangent_to_line(c2, r, n, 0, 1);
     tangent_to_line(c2, r, n, -10, -1);
 
-    constraint dot2(c2 - c1, c2 - c1) == (2 * r) * (2 * r);
-    constraint c1.x == 0;
+    dot2(c2 - c1, c2 - c1) == (2 * r) * (2 * r);
+    c1.x == 0;
 }
 "#;
 
@@ -221,7 +221,7 @@ let sources = vec![
         "constraints/pin.dsl",
         r#"
         system pin(in scalar target, out scalar x) {
-            constraint x == target;
+            x == target;
         }
         "#,
     ),
@@ -256,8 +256,8 @@ let sources = vec![DslSource::new(
 
     system main(inout vec2d a, inout vec2d b, in scalar d) {
         c2_distance_pp(a, b, d);
-        constraint a == [0, 0];
-        constraint b.y == 0;
+        a == [0, 0];
+        b.y == 0;
     }
     "#,
 )];
@@ -330,18 +330,18 @@ When solving fails, you get a structured `SolveFailureReport`:
 
 Important location detail:
 - currently, issue locations are anchored to the lowered equality span used during compilation.
-- for `constraint lhs == rhs`, this maps to the RHS expression span, so columns usually point at the start of the RHS expression.
+- for `lhs == rhs`, this maps to the RHS expression span, so columns usually point at the start of the RHS expression.
 
 Example:
 
 ```text
 system inconsistent(out scalar x) {
-    constraint x == 1;
-    constraint x == 2;
+    x == 1;
+    x == 2;
 }
 ```
 
-For a top residual on the second equation, the reported location is anchored near `2` (the RHS), not the `constraint` keyword.
+For a top residual on the second equation, the reported location is anchored near `2` (the RHS), not a leading keyword.
 
 ## License
 

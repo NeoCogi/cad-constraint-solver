@@ -130,7 +130,7 @@ fn param_mode(input: Span<'_>) -> PResult<'_, ParamMode> {
 /// Parses one statement and trailing semicolon.
 pub(super) fn statement(input: Span<'_>) -> PResult<'_, Stmt> {
     let start = input;
-    // A statement can be declaration, constraint, or callable invocation.
+    // A statement can be declaration, equality, or callable invocation.
     let (input, kind) = alt((
         map(decl_stmt, StmtKind::Decl),
         map(constraint_stmt, |(lhs, rhs)| StmtKind::ConstraintEq {
@@ -181,10 +181,9 @@ pub(super) fn decl_stmt(input: Span<'_>) -> PResult<'_, Decl> {
     ))
 }
 
-/// Parses a constraint statement body (`constraint lhs == rhs`).
+/// Parses an equality statement body (`lhs == rhs`).
 fn constraint_stmt(input: Span<'_>) -> PResult<'_, (Expr, Expr)> {
-    // Grammar: `constraint <expr> == <expr>`
-    let (input, _) = ws(context("constraint keyword", tag("constraint"))).parse(input)?;
+    // Grammar: `<expr> == <expr>`
     let (input, lhs) = context("left expression", expr).parse(input)?;
     let (input, _) = context("'=='", ws(tag("=="))).parse(input)?;
     let (input, rhs) = context("right expression", expr).parse(input)?;

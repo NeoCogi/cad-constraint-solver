@@ -75,18 +75,18 @@ fn assert_parse_error_case(case_name: &str, source: &str, expected_line: usize) 
 
 #[test]
 fn reports_line_and_column_for_compile_errors() {
-    let src = "scalar x;\nconstraint y == 1;";
+    let src = "scalar x;\ny == 1;";
     let err = compile_dsl(src).expect_err("compile should fail");
     assert_eq!(err.line, 2);
-    assert_eq!(err.column, 12);
-    assert_eq!(err.snippet, "constraint y == 1;");
+    assert_eq!(err.column, 1);
+    assert_eq!(err.snippet, "y == 1;");
     assert_eq!(first_caret_column(&err.pointer), Some(err.column));
     assert!(err.to_string().contains("Unknown identifier 'y'"));
 }
 
 #[test]
 fn reports_parse_error_for_bad_parameter_syntax() {
-    let src = "system bad(in scalar a out scalar b) { constraint b == a; }";
+    let src = "system bad(in scalar a out scalar b) { b == a; }";
     let err = parse_dsl(src).expect_err("parse should fail");
     assert_eq!(err.line, 1);
     assert!(err.column > 0);
@@ -96,7 +96,7 @@ fn reports_parse_error_for_bad_parameter_syntax() {
 
 #[test]
 fn reports_parse_error_for_missing_semicolon() {
-    let src = "system s(out scalar r) { scalar y constraint r == y; }";
+    let src = "system s(out scalar r) { scalar y r == y; }";
     let err = parse_dsl(src).expect_err("parse should fail");
     assert_eq!(err.line, 1);
     assert!(err.column > 0);
@@ -119,17 +119,22 @@ fn reports_parse_errors_for_exhaustive_invalid_forms() {
     let cases = vec![
         (
             "missing system name",
-            "system (out scalar x) { constraint x == 1; }",
+            "system (out scalar x) { x == 1; }",
             1usize,
         ),
         (
             "missing comma in parameter list",
-            "system s(in scalar a out scalar b) { constraint b == a; }",
+            "system s(in scalar a out scalar b) { b == a; }",
             1,
         ),
         (
             "unsupported constraint_fn keyword",
-            "constraint_fn f(x: scalar) { constraint x == 1; }",
+            "constraint_fn f(x: scalar) { x == 1; }",
+            1,
+        ),
+        (
+            "legacy constraint keyword",
+            "system s(out scalar x) { constraint x == 1; }",
             1,
         ),
         (
@@ -149,27 +154,27 @@ fn reports_parse_errors_for_exhaustive_invalid_forms() {
         ),
         (
             "missing closing paren in parameter list",
-            "system s(in scalar a, out scalar b { constraint b == a; }",
+            "system s(in scalar a, out scalar b { b == a; }",
             1,
         ),
         (
             "missing semicolon after declaration",
-            "system s(out scalar x) { scalar y constraint x == y; }",
+            "system s(out scalar x) { scalar y x == y; }",
             1,
         ),
         (
             "missing lhs expression",
-            "system s(out scalar x) { constraint == 1; }",
+            "system s(out scalar x) { == 1; }",
             1,
         ),
         (
             "missing rhs expression",
-            "system s(out scalar x) { constraint x == ; }",
+            "system s(out scalar x) { x == ; }",
             1,
         ),
         (
             "malformed binary rhs",
-            "system s(out scalar x) { constraint x == 1 + ; }",
+            "system s(out scalar x) { x == 1 + ; }",
             1,
         ),
         ("unclosed call", "system s(out scalar x) { foo(1, 2; }", 1),
@@ -185,12 +190,12 @@ fn reports_parse_errors_for_exhaustive_invalid_forms() {
         ),
         (
             "missing closing bracket in vector literal",
-            "system s(out scalar x) { vec2d p; constraint p == [1, 2; }",
+            "system s(out scalar x) { vec2d p; p == [1, 2; }",
             1,
         ),
         (
             "invalid swizzle component",
-            "system s(out scalar x) { vec2d p; constraint p.w == 1; }",
+            "system s(out scalar x) { vec2d p; p.w == 1; }",
             1,
         ),
         (
@@ -205,12 +210,12 @@ fn reports_parse_errors_for_exhaustive_invalid_forms() {
         ),
         (
             "unmatched parenthesis in expression",
-            "system s(out scalar x) { constraint (x == 1; }",
+            "system s(out scalar x) { (x == 1; }",
             1,
         ),
         (
             "missing opening system brace",
-            "system s(out scalar x) constraint x == 1; }",
+            "system s(out scalar x) x == 1; }",
             1,
         ),
         (
@@ -220,18 +225,18 @@ fn reports_parse_errors_for_exhaustive_invalid_forms() {
         ),
         (
             "trailing garbage after valid system",
-            "system s(out scalar x) { constraint x == 1; } trailing",
+            "system s(out scalar x) { x == 1; } trailing",
             1,
         ),
         ("random garbage input", "@@@", 1),
         (
             "multiline missing rhs expression",
-            "system s(out scalar x) {\nconstraint x == ;\n}",
+            "system s(out scalar x) {\nx == ;\n}",
             1,
         ),
         (
             "multiline missing closing vector bracket",
-            "system s(out scalar x) {\nvec2d p;\nconstraint p == [1, 2;\n}",
+            "system s(out scalar x) {\nvec2d p;\np == [1, 2;\n}",
             1,
         ),
     ];
@@ -247,7 +252,7 @@ fn parses_top_level_imports() {
             import "constraints/common.dsl";
             import "../shared/math.dsl";
             scalar x;
-            constraint x == 1;
+            x == 1;
         "#;
     let program = parse_dsl(src).expect("parse");
     assert_eq!(program.imports.len(), 2);
@@ -259,7 +264,7 @@ fn parses_top_level_imports() {
 fn rejects_imports_in_single_source_compile_api() {
     let src = r#"
             import "common.dsl";
-            system s(out scalar x) { constraint x == 1; }
+            system s(out scalar x) { x == 1; }
         "#;
     let err = compile_dsl(src).expect_err("compile should fail");
     assert!(err.message.contains("Imports require project compilation"));
@@ -275,7 +280,7 @@ fn compiles_and_solves_multi_file_project() {
             "constraints/2d.dsl",
             r#"
                 system pin(out vec2d p) {
-                    constraint p == [3, 4];
+                    p == [3, 4];
                 }
                 "#,
         ),
@@ -310,7 +315,7 @@ fn reports_missing_import_with_callsite_location() {
         r#"
             import "../constraints/missing.dsl";
             system s(out scalar x) {
-                constraint x == 1;
+                x == 1;
             }
             "#,
     )];
@@ -346,7 +351,7 @@ fn reports_duplicate_system_across_files() {
             "constraints/a.dsl",
             r#"
                 system c(inout scalar v) {
-                    constraint v == 0;
+                    v == 0;
                 }
                 "#,
         ),
@@ -354,7 +359,7 @@ fn reports_duplicate_system_across_files() {
             "constraints/b.dsl",
             r#"
                 system c(inout scalar v) {
-                    constraint v == 1;
+                    v == 1;
                 }
                 "#,
         ),
@@ -384,8 +389,8 @@ fn solve_trace_reports_origin_file_and_callsite() {
             "constraints/common.dsl",
             r#"
                 system contradictory(inout scalar v) {
-                    constraint v == 0;
-                    constraint v == 1;
+                    v == 0;
+                    v == 1;
                 }
                 "#,
         ),
@@ -434,8 +439,8 @@ fn supports_hash_comments() {
             # top-level comment
             system s(out scalar x) {
                 scalar temp; # inline comment
-                constraint temp == x; # another comment
-                constraint x == 2; # another comment
+                temp == x; # another comment
+                x == 2; # another comment
             }
         "#;
 
@@ -447,7 +452,7 @@ fn supports_hash_comments() {
 
 #[test]
 fn solves_simple_vec2_constraints() {
-    let src = "vec2d p;\nconstraint p == [3.0, 4.0];";
+    let src = "vec2d p;\np == [3.0, 4.0];";
     let model = compile_dsl(src).expect("compile");
     let seed = model
         .bootstrap_seed()
@@ -462,9 +467,9 @@ fn solves_simple_vec2_constraints() {
 fn solves_simple_vec3_constraints() {
     let src = r#"
             vec3d n;
-            constraint n == [0.0, 0.0, 1.0];
-            constraint dot3(n, [0.0, 0.0, 1.0]) == 1.0;
-            constraint length3(n) == 1.0;
+            n == [0.0, 0.0, 1.0];
+            dot3(n, [0.0, 0.0, 1.0]) == 1.0;
+            length3(n) == 1.0;
         "#;
 
     let model = compile_dsl(src).expect("compile");
@@ -482,11 +487,11 @@ fn solves_simple_vec3_constraints() {
 fn solves_composed_system_with_parameters_and_locals() {
     let src = r#"
             system tangent_to_line(in vec2d center, in scalar r, in vec2d n, in scalar d, in scalar side) {
-                constraint dot2(n, center) + d == side * r;
+                dot2(n, center) + d == side * r;
             }
 
             system equal_radius_tangent(in vec2d c1, in vec2d c2, in scalar r) {
-                constraint dot2(c2 - c1, c2 - c1) == (2 * r) * (2 * r);
+                dot2(c2 - c1, c2 - c1) == (2 * r) * (2 * r);
             }
 
             system circles(inout vec2d c1, inout vec2d c2, inout scalar r) {
@@ -497,7 +502,7 @@ fn solves_composed_system_with_parameters_and_locals() {
                 tangent_to_line(c2, r, n, 0, 1);
                 tangent_to_line(c2, r, n, -10, -1);
                 equal_radius_tangent(c1, c2, r);
-                constraint c1.x == 0;
+                c1.x == 0;
             }
         "#;
 
@@ -531,8 +536,8 @@ fn rejects_setting_local_variable_from_public_api() {
     let src = r#"
             system s(out scalar x) {
                 scalar hidden;
-                constraint hidden == x + 1;
-                constraint x == 2;
+                hidden == x + 1;
+                x == 2;
             }
         "#;
 
@@ -544,7 +549,7 @@ fn rejects_setting_local_variable_from_public_api() {
 
 #[test]
 fn reports_overconstrained_inconsistency_with_trace() {
-    let src = "system bad(out scalar x) {\nconstraint x == 0;\nconstraint x == 1;\n}";
+    let src = "system bad(out scalar x) {\nx == 0;\nx == 1;\n}";
 
     let model = compile_dsl(src).expect("compile");
     let err = model
@@ -562,8 +567,8 @@ fn reports_overconstrained_inconsistency_with_trace() {
         .iter()
         .find(|issue| issue.line == 2)
         .expect("missing issue for line 2");
-    assert_eq!(first.column, 17);
-    assert_eq!(first.snippet, "constraint x == 0;");
+    assert_eq!(first.column, 6);
+    assert_eq!(first.snippet, "x == 0;");
     assert_eq!(first_caret_column(&first.pointer), Some(first.column));
 
     let second = report
@@ -571,14 +576,14 @@ fn reports_overconstrained_inconsistency_with_trace() {
         .iter()
         .find(|issue| issue.line == 3)
         .expect("missing issue for line 3");
-    assert_eq!(second.column, 17);
-    assert_eq!(second.snippet, "constraint x == 1;");
+    assert_eq!(second.column, 6);
+    assert_eq!(second.snippet, "x == 1;");
     assert_eq!(first_caret_column(&second.pointer), Some(second.column));
 }
 
 #[test]
 fn reports_non_convergence_with_trace() {
-    let src = "system impossible(out scalar x) {\nconstraint exp(x) == -1;\n}";
+    let src = "system impossible(out scalar x) {\nexp(x) == -1;\n}";
 
     let model = compile_dsl(src).expect("compile");
     let err = model
@@ -598,15 +603,15 @@ fn reports_non_convergence_with_trace() {
         .iter()
         .find(|issue| issue.line == 2)
         .expect("missing issue for line 2");
-    assert_eq!(issue.column, 22);
-    assert_eq!(issue.snippet, "constraint exp(x) == -1;");
+    assert_eq!(issue.column, 11);
+    assert_eq!(issue.snippet, "exp(x) == -1;");
     assert_eq!(first_caret_column(&issue.pointer), Some(issue.column));
     assert!(issue.magnitude >= 0.0);
 }
 
 #[test]
 fn reports_non_convergence_with_line_search_trace() {
-    let src = "system impossible(out scalar x) {\nconstraint exp(x) == -1;\n}";
+    let src = "system impossible(out scalar x) {\nexp(x) == -1;\n}";
 
     let model = compile_dsl(src).expect("compile");
     let err = model
@@ -626,8 +631,8 @@ fn reports_non_convergence_with_line_search_trace() {
         .iter()
         .find(|issue| issue.line == 2)
         .expect("missing issue for line 2");
-    assert_eq!(issue.column, 22);
-    assert_eq!(issue.snippet, "constraint exp(x) == -1;");
+    assert_eq!(issue.column, 11);
+    assert_eq!(issue.snippet, "exp(x) == -1;");
     assert_eq!(first_caret_column(&issue.pointer), Some(issue.column));
 }
 
@@ -636,8 +641,8 @@ fn failure_report_absent_on_non_failure_errors() {
     let src = r#"
             system s(out scalar x) {
                 scalar hidden;
-                constraint hidden == x + 1;
-                constraint x == 2;
+                hidden == x + 1;
+                x == 2;
             }
         "#;
 
@@ -653,7 +658,7 @@ fn failure_report_absent_on_non_failure_errors() {
 fn classifies_all_failure_kinds() {
     let src = r#"
             system s(out scalar x) {
-                constraint x == 0;
+                x == 0;
             }
         "#;
     let model = compile_dsl(src).expect("compile");
@@ -698,9 +703,9 @@ fn classifies_all_failure_kinds() {
 fn failure_issues_are_sorted_by_residual_magnitude() {
     let src = r#"
             system bad(out scalar x) {
-                constraint x == 0;
-                constraint x == 2;
-                constraint x == 10;
+                x == 0;
+                x == 2;
+                x == 10;
             }
         "#;
 
@@ -719,7 +724,7 @@ fn failure_issues_are_sorted_by_residual_magnitude() {
 
 #[test]
 fn trace_contains_system_and_call_context() {
-    let src = "system contradictory(inout scalar v) {\nconstraint v == 0;\nconstraint v == 1;\n}\n\nsystem traced(inout scalar x) {\ncontradictory(x);\n}";
+    let src = "system contradictory(inout scalar v) {\nv == 0;\nv == 1;\n}\n\nsystem traced(inout scalar x) {\ncontradictory(x);\n}";
 
     let model = compile_dsl_system(src, "traced").expect("compile");
     let err = model
@@ -743,8 +748,8 @@ fn trace_contains_system_and_call_context() {
     );
     assert!(report.issues.iter().any(|issue| {
         (issue.line == 2 || issue.line == 3)
-            && issue.column == 17
-            && issue.snippet.starts_with("constraint v ==")
+            && issue.column == 6
+            && issue.snippet.starts_with("v ==")
             && first_caret_column(&issue.pointer) == Some(issue.column)
     }));
 }
@@ -753,8 +758,8 @@ fn trace_contains_system_and_call_context() {
 fn parses_system_parameters_with_directions() {
     let src = r#"
         system helper(in scalar a, out vec2d p, inout scalar k) {
-            constraint a == k;
-            constraint p == [a, k];
+            a == k;
+            p == [a, k];
         }
     "#;
     let program = parse_dsl(src).expect("parse");
@@ -769,7 +774,7 @@ fn parses_system_parameters_with_directions() {
 fn solves_parameterized_system_call_without_use_keyword() {
     let src = r#"
         system pin(in scalar target, out scalar x) {
-            constraint x == target;
+            x == target;
         }
 
         system main(out scalar v) {
@@ -787,7 +792,7 @@ fn solves_parameterized_system_call_without_use_keyword() {
 fn rejects_setting_out_parameter_from_public_seed() {
     let src = r#"
         system s(out scalar x) {
-            constraint x == 1;
+            x == 1;
         }
     "#;
     let model = compile_dsl(src).expect("compile");
@@ -801,12 +806,12 @@ fn rejects_setting_out_parameter_from_public_seed() {
 fn rejects_non_identifier_out_argument_for_system_call() {
     let src = r#"
         system producer(out scalar x) {
-            constraint x == 1;
+            x == 1;
         }
 
         system main(out scalar y) {
             producer(1 + 2);
-            constraint y == 0;
+            y == 0;
         }
     "#;
     let err = compile_dsl_system(src, "main").expect_err("compile should fail");
@@ -822,7 +827,7 @@ fn rejects_recursive_system_calls() {
 
         system main(out scalar x) {
             rec(x);
-            constraint x == 1;
+            x == 1;
         }
     "#;
     let err = compile_dsl_system(src, "main").expect_err("compile should fail");
@@ -862,8 +867,8 @@ fn solves_project_with_embedded_std2d_library() {
 
             system main(inout vec2d a, inout vec2d b, in scalar d) {
                 c2_distance_pp(a, b, d);
-                constraint a == [0, 0];
-                constraint b.y == 0;
+                a == [0, 0];
+                b.y == 0;
             }
         "#,
     )];
@@ -890,8 +895,8 @@ fn solves_project_with_embedded_std3d_library() {
 
             system main(inout vec3d p) {
                 c3_point_on_plane(p, [0, 0, 0], [0, 0, 1]);
-                constraint p.x == 2;
-                constraint p.y == -1;
+                p.x == 2;
+                p.y == -1;
             }
         "#,
     )];
@@ -915,7 +920,7 @@ fn std2d_simple_point_on_circle() {
 
         system main(inout vec2d p, in vec2d c, in scalar r) {
             c2_point_on_circle(p, c, r);
-            constraint p.y == 0;
+            p.y == 0;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -936,7 +941,7 @@ fn std2d_simple_diameter_constraint() {
         import "../stdlib/std2d.dsl";
 
         system main(inout vec2d a, inout vec2d b) {
-            constraint a == [0, 0];
+            a == [0, 0];
             c2_horizontal(a, b);
             c2_diameter(a, b, 10);
         }
@@ -959,7 +964,7 @@ fn std2d_simple_line_circle_tangent() {
 
         system main(inout vec2d center, in scalar r) {
             c2_tangent_line_circle([0, 0], [1, 0], center, r, 1);
-            constraint center.x == 3;
+            center.x == 3;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -999,11 +1004,11 @@ fn std2d_medium_hdist_vdist_and_equal_length() {
         import "../stdlib/std2d.dsl";
 
         system main(inout vec2d a, inout vec2d b, inout vec2d c, inout vec2d d) {
-            constraint a == [0, 0];
+            a == [0, 0];
             c2_hdist(a, b, 4);
             c2_vdist(a, b, 3);
 
-            constraint c == [1, 1];
+            c == [1, 1];
             c2_horizontal(c, d);
             c2_equal_length(a, b, c, d);
         }
@@ -1036,11 +1041,11 @@ fn std2d_medium_midpoint_collinear_and_parallel_perpendicular() {
             inout vec2d p,
             inout vec2d b1
         ) {
-            constraint a == [0, 0];
-            constraint b == [10, 0];
+            a == [0, 0];
+            b == [10, 0];
             c2_midpoint(m, a, b);
             c2_collinear(p, a, b);
-            constraint p.x == 7;
+            p.x == 7;
 
             c2_parallel([0, 0], [2, 0], [1, 1], b1);
             c2_perpendicular([1, 1], b1, [0, 0], [0, 1]);
@@ -1085,7 +1090,7 @@ fn std2d_medium_angle_equal_angle_ratio_diff_concentric_radius() {
             c2_concentric([1, 2], [1, 2]);
             c2_radius([1, 2], p, 3);
             c2_point_on_circle(p, [1, 2], 3);
-            constraint p.y == 2;
+            p.y == 2;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -1117,7 +1122,7 @@ fn std2d_high_two_equal_circles_tangent_to_two_lines_and_each_other() {
             c2_tangent_line_circle([0, 0], [1, 0], c2, r, 1);
             c2_tangent_line_circle([0, 10], [1, 10], c2, r, -1);
             c2_tangent_circle_circle(c1, r, c2, r, 1);
-            constraint c1.x == 0;
+            c1.x == 0;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -1174,8 +1179,8 @@ fn std3d_simple_point_on_line_and_plane_signed_distance() {
             c3_distance_pp([0, 0, 0], p, 5);
 
             c3_distance_point_plane_signed(q, [0, 0, 0], [0, 0, 1], 2);
-            constraint q.x == 1;
-            constraint q.y == -3;
+            q.x == 1;
+            q.y == -3;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -1204,15 +1209,15 @@ fn std3d_medium_parallel_perpendicular_and_angle_constraints() {
             c3_perpendicular_lines([0, 0, 0], [1, 0, 0], [0, 0, 0], c1);
             c3_distance_pp([0, 1, 0], b1, 4);
             c3_distance_pp([0, 0, 0], c1, 3);
-            constraint c1.y == 0;
+            c1.y == 0;
 
             c3_angle_ll([0, 0, 0], [1, 0, 0], [0, 0, 0], v1, 1.57079632679);
             c3_distance_pp([0, 0, 0], v1, 2);
-            constraint v1.z == 0;
+            v1.z == 0;
 
             c3_angle_line_plane([0, 0, 0], l1, [0, 0, 1], 0);
             c3_distance_pp([0, 0, 0], l1, 3);
-            constraint l1.y == 0;
+            l1.y == 0;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -1249,13 +1254,13 @@ fn std3d_medium_tangent_and_distance_constraints() {
         system main(inout vec3d c1, inout vec3d c2, inout vec3d p) {
             c3_tangent_sphere_plane(c1, 2, [0, 0, 0], [0, 0, 1], 1);
             c3_tangent_sphere_sphere(c1, 2, c2, 3, 1);
-            constraint c1 == [0, 0, 2];
-            constraint c2.y == 0;
-            constraint c2.z == 2;
+            c1 == [0, 0, 2];
+            c2.y == 0;
+            c2.z == 2;
 
             c3_distance_point_line(p, [0, 0, 0], [1, 0, 0], 5);
-            constraint p.x == 2;
-            constraint p.y == 4;
+            p.x == 2;
+            p.y == 4;
         }
     "#;
     let model = compile_stdlib_entry_system(src, "main");
@@ -1291,20 +1296,20 @@ fn std3d_high_line_line_and_plane_plane_and_sphere_constraints() {
         ) {
             c3_distance_line_line([0, 0, 0], [1, 0, 0], b0, b1, 3);
             c3_parallel_lines([0, 0, 0], [1, 0, 0], b0, b1);
-            constraint b0.x == 0;
-            constraint b1.x == 1;
-            constraint b0.z == 0;
-            constraint b1.z == 0;
+            b0.x == 0;
+            b1.x == 1;
+            b0.z == 0;
+            b1.z == 0;
 
             c3_distance_plane_plane([0, 0, 0], [0, 0, 1], p2, n2, 4);
             c3_parallel_planes([0, 0, 1], n2);
             c3_perpendicular_planes([0, 0, 1], [1, 0, 0]);
-            constraint p2.x == 0;
-            constraint p2.y == 0;
+            p2.x == 0;
+            p2.y == 0;
 
             c3_concentric_spheres([1, 2, 3], c2);
             c3_equal_radius(r1, r2);
-            constraint r1 == 2;
+            r1 == 2;
             c3_point_on_sphere([3, 2, 3], c2, r2);
         }
     "#;

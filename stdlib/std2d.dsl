@@ -23,7 +23,7 @@
 # Enforces two points to be identical.
 # ----------------------------------------------------------------------------
 system c2_coincident(in vec2d a, in vec2d b) {
-    constraint a == b;
+    a == b;
 }
 
 # ----------------------------------------------------------------------------
@@ -31,7 +31,7 @@ system c2_coincident(in vec2d a, in vec2d b) {
 # Constrains segment (a,b) to be horizontal.
 # ----------------------------------------------------------------------------
 system c2_horizontal(in vec2d a, in vec2d b) {
-    constraint a.y == b.y;
+    a.y == b.y;
 }
 
 # ----------------------------------------------------------------------------
@@ -39,7 +39,7 @@ system c2_horizontal(in vec2d a, in vec2d b) {
 # Constrains segment (a,b) to be vertical.
 # ----------------------------------------------------------------------------
 system c2_vertical(in vec2d a, in vec2d b) {
-    constraint a.x == b.x;
+    a.x == b.x;
 }
 
 # ----------------------------------------------------------------------------
@@ -48,7 +48,7 @@ system c2_vertical(in vec2d a, in vec2d b) {
 # Uses squared-distance form: |b-a|^2 = dist^2.
 # ----------------------------------------------------------------------------
 system c2_distance_pp(in vec2d a, in vec2d b, in scalar dist) {
-    constraint dot2(b - a, b - a) == dist * dist;
+    dot2(b - a, b - a) == dist * dist;
 }
 
 # ----------------------------------------------------------------------------
@@ -56,7 +56,7 @@ system c2_distance_pp(in vec2d a, in vec2d b, in scalar dist) {
 # Signed horizontal distance constraint: b.x - a.x = dx.
 # ----------------------------------------------------------------------------
 system c2_hdist(in vec2d a, in vec2d b, in scalar dx) {
-    constraint b.x - a.x == dx;
+    b.x - a.x == dx;
 }
 
 # ----------------------------------------------------------------------------
@@ -64,7 +64,7 @@ system c2_hdist(in vec2d a, in vec2d b, in scalar dx) {
 # Signed vertical distance constraint: b.y - a.y = dy.
 # ----------------------------------------------------------------------------
 system c2_vdist(in vec2d a, in vec2d b, in scalar dy) {
-    constraint b.y - a.y == dy;
+    b.y - a.y == dy;
 }
 
 # ----------------------------------------------------------------------------
@@ -72,7 +72,7 @@ system c2_vdist(in vec2d a, in vec2d b, in scalar dy) {
 # Enforces m to be the midpoint of segment (a,b).
 # ----------------------------------------------------------------------------
 system c2_midpoint(in vec2d m, in vec2d a, in vec2d b) {
-    constraint 2 * m == a + b;
+    2 * m == a + b;
 }
 
 # ----------------------------------------------------------------------------
@@ -81,7 +81,7 @@ system c2_midpoint(in vec2d m, in vec2d a, in vec2d b) {
 # Formula: cross(l1-l0, p-l0) = 0.
 # ----------------------------------------------------------------------------
 system c2_point_on_line(in vec2d p, in vec2d l0, in vec2d l1) {
-    constraint (l1.x - l0.x) * (p.y - l0.y) - (l1.y - l0.y) * (p.x - l0.x) == 0;
+    (l1.x - l0.x) * (p.y - l0.y) - (l1.y - l0.y) * (p.x - l0.x) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -98,7 +98,7 @@ system c2_collinear(in vec2d a, in vec2d b, in vec2d c) {
 # Formula: cross(d1,d2) = 0.
 # ----------------------------------------------------------------------------
 system c2_parallel(in vec2d a0, in vec2d a1, in vec2d b0, in vec2d b1) {
-    constraint (a1.x - a0.x) * (b1.y - b0.y) - (a1.y - a0.y) * (b1.x - b0.x) == 0;
+    (a1.x - a0.x) * (b1.y - b0.y) - (a1.y - a0.y) * (b1.x - b0.x) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -107,7 +107,7 @@ system c2_parallel(in vec2d a0, in vec2d a1, in vec2d b0, in vec2d b1) {
 # Formula: dot(d1,d2) = 0.
 # ----------------------------------------------------------------------------
 system c2_perpendicular(in vec2d a0, in vec2d a1, in vec2d b0, in vec2d b1) {
-    constraint dot2(a1 - a0, b1 - b0) == 0;
+    dot2(a1 - a0, b1 - b0) == 0;
 }
 
 # ----------------------------------------------------------------------------
@@ -122,7 +122,7 @@ system c2_angle_ll(
     in vec2d b1,
     in scalar angle_rad
 ) {
-    constraint dot2(a1 - a0, b1 - b0)
+    dot2(a1 - a0, b1 - b0)
         == cos(angle_rad) * length2(a1 - a0) * length2(b1 - b0);
 }
 
@@ -139,7 +139,7 @@ system c2_equal_angle(
     in vec2d b1,
     in vec2d b2
 ) {
-    constraint dot2(a1 - a0, a2 - a0) * length2(b1 - b0) * length2(b2 - b0)
+    dot2(a1 - a0, a2 - a0) * length2(b1 - b0) * length2(b2 - b0)
         == dot2(b1 - b0, b2 - b0) * length2(a1 - a0) * length2(a2 - a0);
 }
 
@@ -148,7 +148,7 @@ system c2_equal_angle(
 # Enforces p to lie on circle(center,radius).
 # ----------------------------------------------------------------------------
 system c2_point_on_circle(in vec2d p, in vec2d center, in scalar radius) {
-    constraint dot2(p - center, p - center) == radius * radius;
+    dot2(p - center, p - center) == radius * radius;
 }
 
 # ----------------------------------------------------------------------------
@@ -172,7 +172,7 @@ system c2_diameter(in vec2d a, in vec2d b, in scalar diameter) {
 # Enforces two circle centers to coincide.
 # ----------------------------------------------------------------------------
 system c2_concentric(in vec2d c1, in vec2d c2) {
-    constraint c1 == c2;
+    c1 == c2;
 }
 
 # ----------------------------------------------------------------------------
@@ -180,7 +180,7 @@ system c2_concentric(in vec2d c1, in vec2d c2) {
 # Enforces |b-a| = |d-c| using squared form.
 # ----------------------------------------------------------------------------
 system c2_equal_length(in vec2d a, in vec2d b, in vec2d c, in vec2d d) {
-    constraint dot2(b - a, b - a) == dot2(d - c, d - c);
+    dot2(b - a, b - a) == dot2(d - c, d - c);
 }
 
 # ----------------------------------------------------------------------------
@@ -195,7 +195,7 @@ system c2_length_ratio(
     in vec2d d,
     in scalar ratio
 ) {
-    constraint dot2(b - a, b - a) == ratio * ratio * dot2(d - c, d - c);
+    dot2(b - a, b - a) == ratio * ratio * dot2(d - c, d - c);
 }
 
 # ----------------------------------------------------------------------------
@@ -209,7 +209,7 @@ system c2_length_diff(
     in vec2d d,
     in scalar delta
 ) {
-    constraint length2(b - a) - length2(d - c) == delta;
+    length2(b - a) - length2(d - c) == delta;
 }
 
 # ----------------------------------------------------------------------------
@@ -226,7 +226,7 @@ system c2_tangent_line_circle(
     in scalar radius,
     in scalar side
 ) {
-    constraint (l1.x - l0.x) * (center.y - l0.y) - (l1.y - l0.y) * (center.x - l0.x)
+    (l1.x - l0.x) * (center.y - l0.y) - (l1.y - l0.y) * (center.x - l0.x)
         == side * radius * length2(l1 - l0);
 }
 
@@ -243,7 +243,7 @@ system c2_tangent_circle_circle(
     in scalar r2,
     in scalar mode
 ) {
-    constraint dot2(c2 - c1, c2 - c1) == (r1 + mode * r2) * (r1 + mode * r2);
+    dot2(c2 - c1, c2 - c1) == (r1 + mode * r2) * (r1 + mode * r2);
 }
 
 # ----------------------------------------------------------------------------
@@ -255,5 +255,5 @@ system c2_tangent_circle_circle(
 # ----------------------------------------------------------------------------
 system c2_symmetric_about_line(in vec2d p, in vec2d p_ref, in vec2d l0, in vec2d l1) {
     c2_point_on_line((p + p_ref) / 2, l0, l1);
-    constraint dot2(p_ref - p, l1 - l0) == 0;
+    dot2(p_ref - p, l1 - l0) == 0;
 }

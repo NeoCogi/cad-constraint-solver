@@ -170,7 +170,7 @@ pub struct Decl {
 pub enum StmtKind {
     /// Declaration statement.
     Decl(Decl),
-    /// Equality constraint statement (`constraint lhs == rhs;`).
+    /// Equality constraint statement (`lhs == rhs;`).
     ConstraintEq { lhs: Expr, rhs: Expr },
     /// Callable invocation statement (`name(args...);`).
     Call(CallStmt),

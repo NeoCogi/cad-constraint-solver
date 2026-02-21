@@ -155,7 +155,7 @@ impl LowerContext {
         Ok(())
     }
 
-    /// Lowers one `constraint lhs == rhs;` statement.
+    /// Lowers one `lhs == rhs;` statement.
     pub(super) fn lower_constraint(&mut self, lhs: &Expr, rhs: &Expr) -> Result<(), CompileError> {
         // Both sides are type-lowered first, then expanded to scalar equations.
         let lhs = self.lower_expr(lhs)?;
